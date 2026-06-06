@@ -1,0 +1,15 @@
+id: req_launchTracking01
+from: maya/marketing
+to: russell/coding
+kind: request
+goal: Add launch tracking to the signup CTA.
+context:
+  - https://github.com/acme/web/issues/42
+  - https://figma.com/file/example
+definition_of_done:
+  - Event fires when the CTA is clicked.
+  - Event name is documented.
+constraints:
+  - Do not change billing flow.
+deadline: "2026-06-09T17:00:00Z"
+created_at: "2026-06-06T16:00:00Z"

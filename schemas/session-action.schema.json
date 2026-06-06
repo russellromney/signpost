@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signpost.dev/schemas/session-action.schema.json",
+  "title": "SessionAction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "session", "identity", "action", "created_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^act_[a-zA-Z0-9]+$"
+    },
+    "session": {
+      "type": "string",
+      "pattern": "^sess_[a-zA-Z0-9]+$"
+    },
+    "identity": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["accept", "block", "ask_owner", "ask_sender", "delegate", "post_update", "complete", "cancel"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "requires_gate": {
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

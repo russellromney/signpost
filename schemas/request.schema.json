@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signpost.dev/schemas/request.schema.json",
+  "title": "Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "from", "to", "kind", "goal", "definition_of_done", "created_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^req_[a-zA-Z0-9]+$"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["request"]
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "context": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "definition_of_done": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

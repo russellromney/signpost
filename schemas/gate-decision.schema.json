@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signpost.dev/schemas/gate-decision.schema.json",
+  "title": "GateDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "request", "gate", "decision", "created_at"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^dec_[a-zA-Z0-9]+$"
+    },
+    "request": {
+      "type": "string",
+      "pattern": "^req_[a-zA-Z0-9]+$"
+    },
+    "gate": {
+      "type": "string"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "allow_with_limits", "deny", "ask_sender", "ask_owner", "route", "counter"]
+    },
+    "limits": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "reason": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "route_to": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
