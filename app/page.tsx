@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { getDb } from "@/lib/db";
 import { INBOX_VIEWS, inbox, listIdentities } from "@/lib/queries";
+import { ActionForm } from "./components/ActionForm";
 import { createRequestAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -44,7 +45,7 @@ export default function InboxPage() {
 
       <details className="panel" open={buckets.needs_gate.length + Object.values(buckets).flat().length === 0}>
         <summary>Create request</summary>
-        <form action={createRequestAction} style={{ marginTop: 12 }}>
+        <ActionForm action={createRequestAction} style={{ marginTop: 12 }}>
           <div className="grid-2">
             <div>
               <label>
@@ -106,7 +107,7 @@ export default function InboxPage() {
               Create request
             </button>
           </div>
-        </form>
+        </ActionForm>
       </details>
     </>
   );

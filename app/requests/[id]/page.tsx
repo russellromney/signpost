@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getDb } from "@/lib/db";
 import { getRequestDetail } from "@/lib/queries";
 import type { RequestStatus } from "@/lib/types";
+import { ActionForm } from "../../components/ActionForm";
 import {
   closeAction,
   decideAction,
@@ -186,7 +187,7 @@ export default async function RequestDetailPage({
             {canDecide && (
               <>
                 <h3>Gate</h3>
-                <form action={decideAction} className="btn-row">
+                <ActionForm action={decideAction} className="btn-row">
                   <input type="hidden" name="request_id" value={r.id} />
                   <button name="decision" value="allow" className="good">
                     Allow
@@ -200,9 +201,9 @@ export default async function RequestDetailPage({
                   <button name="decision" value="ask_owner">
                     Ask owner
                   </button>
-                </form>
+                </ActionForm>
 
-                <form action={decideAction} style={{ marginTop: 12 }}>
+                <ActionForm action={decideAction} style={{ marginTop: 12 }}>
                   <input type="hidden" name="request_id" value={r.id} />
                   <input type="hidden" name="decision" value="allow_with_limits" />
                   <label>
@@ -221,12 +222,12 @@ export default async function RequestDetailPage({
                       Allow with limits
                     </button>
                   </div>
-                </form>
+                </ActionForm>
               </>
             )}
 
             {r.status === "needs_info" && (
-              <form action={respondInfoAction} style={{ marginTop: 12 }}>
+              <ActionForm action={respondInfoAction} style={{ marginTop: 12 }}>
                 <input type="hidden" name="request_id" value={r.id} />
                 <h3>Respond as sender</h3>
                 <label>
@@ -236,14 +237,14 @@ export default async function RequestDetailPage({
                 <div className="btn-row">
                   <button type="submit">Send info (back to gate)</button>
                 </div>
-              </form>
+              </ActionForm>
             )}
 
             {r.status === "blocked" && (
               <>
                 <h3>Execution check</h3>
                 <p className="muted">The worker flagged a risky step. Resolve it.</p>
-                <form action={resolveCheckAction}>
+                <ActionForm action={resolveCheckAction}>
                   <input type="hidden" name="request_id" value={r.id} />
                   <label>
                     Reason <span className="hint">one per line</span>
@@ -257,12 +258,12 @@ export default async function RequestDetailPage({
                       Deny action
                     </button>
                   </div>
-                </form>
+                </ActionForm>
               </>
             )}
 
             {r.status === "accepted" && (
-              <form action={startSessionAction}>
+              <ActionForm action={startSessionAction}>
                 <input type="hidden" name="request_id" value={r.id} />
                 <p className="muted">Gate allowed work. Start a session for {r.to_id}.</p>
                 <div className="btn-row">
@@ -270,13 +271,13 @@ export default async function RequestDetailPage({
                     Create / start session
                   </button>
                 </div>
-              </form>
+              </ActionForm>
             )}
 
             {r.status === "active" && (
               <>
                 <h3>Session</h3>
-                <form action={postUpdateAction}>
+                <ActionForm action={postUpdateAction}>
                   <input type="hidden" name="request_id" value={r.id} />
                   <label>
                     Post session update
@@ -291,9 +292,9 @@ export default async function RequestDetailPage({
                   <div className="btn-row">
                     <button type="submit">Post session update</button>
                   </div>
-                </form>
+                </ActionForm>
 
-                <form action={markReadyAction} style={{ marginTop: 12 }}>
+                <ActionForm action={markReadyAction} style={{ marginTop: 12 }}>
                   <input type="hidden" name="request_id" value={r.id} />
                   <label>
                     Mark ready for release <span className="hint">optional note</span>
@@ -304,20 +305,20 @@ export default async function RequestDetailPage({
                       Mark ready for release
                     </button>
                   </div>
-                </form>
+                </ActionForm>
               </>
             )}
 
             {r.status === "ready_for_release" && (
               <>
                 <h3>Release</h3>
-                <form action={releaseAction} className="btn-row">
+                <ActionForm action={releaseAction} className="btn-row">
                   <input type="hidden" name="request_id" value={r.id} />
                   <button className="good" type="submit">
                     Release
                   </button>
-                </form>
-                <form action={rejectReleaseAction} style={{ marginTop: 12 }}>
+                </ActionForm>
+                <ActionForm action={rejectReleaseAction} style={{ marginTop: 12 }}>
                   <input type="hidden" name="request_id" value={r.id} />
                   <label>
                     Reject release <span className="hint">reason</span>
@@ -328,12 +329,12 @@ export default async function RequestDetailPage({
                       Reject release
                     </button>
                   </div>
-                </form>
+                </ActionForm>
               </>
             )}
 
             {r.status === "released" && (
-              <form action={closeAction}>
+              <ActionForm action={closeAction}>
                 <input type="hidden" name="request_id" value={r.id} />
                 <h3>Close with receipt</h3>
                 <label>
@@ -364,7 +365,7 @@ export default async function RequestDetailPage({
                     Close with receipt
                   </button>
                 </div>
-              </form>
+              </ActionForm>
             )}
 
             {(r.status === "closed" || r.status === "denied") && (
