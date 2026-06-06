@@ -181,7 +181,7 @@ The internal states can stay small:
 ```text
 requested
 screening
-accepted | denied | needs_info | needs_owner
+accepted | denied | needs_info | needs_owner | countered
 active
 blocked | needs_owner
 ready_for_release
@@ -355,7 +355,7 @@ permissions table:
 
 | Role     | Who            | May                                                    |
 | -------- | -------------- | ------------------------------------------------------ |
-| `sender` | request `from` | respond to `ask_sender`, read status/receipt           |
+| `sender` | request `from` | respond to `ask_sender`, accept/decline a `counter`, read status/receipt |
 | `worker` | request `to`   | start a session, post actions, ask the gate, submit receipt |
 | `gate`   | recipient gate | decide (request / execution / release checks)          |
 | `owner`  | recipient owner| gate powers + release                                  |
@@ -374,8 +374,9 @@ GET  /v1/requests?role=worker&status=accepted   # find my work
 POST /v1/requests                        # create (Idempotency-Key supported)
 GET  /v1/requests/:id
 
-POST /v1/requests/:id/decisions          # gate: allow|allow_with_limits|deny|ask_sender|ask_owner
+POST /v1/requests/:id/decisions          # gate: allow|allow_with_limits|deny|ask_sender|ask_owner|route|counter
 POST /v1/requests/:id/info               # sender answers an ask_sender
+POST /v1/requests/:id/counter            # sender accepts/declines a counter ({ accept: bool })
 POST /v1/requests/:id/session            # worker claims + starts
 POST /v1/requests/:id/session/actions    # { action: post_update | ask_gate | complete }
 POST /v1/requests/:id/checks             # gate resolves an execution check
@@ -389,6 +390,19 @@ PUT  /v1/identities/:id/policy           # set a gate policy (owner only)
 The gate's three moments are all here: request-time (`/decisions`),
 execution-time (`ask_gate` → blocked → `/checks`), and release-time
 (`/release`, `/receipt`).
+
+Two request-time decisions re-shape the request instead of simply admitting or
+refusing it:
+
+- **`route`** re-addresses the request to a different identity (`route_to`) and
+  sends it back through *that* recipient's gate — so it's screened (and may be
+  auto-decided) under the new owner's policy. `maya/marketing → russell` routed
+  to `russell/coding` is screened by `russell/coding`'s policy.
+- **`counter`** proposes modified terms (`limits` / `reason`) the sender must
+  accept or decline (`POST /counter`). Accept proceeds as `accepted` under the
+  proposed terms; decline closes the request. The status while it waits is
+  `countered`. `route` and `counter` are human decisions — a static policy can't
+  supply a per-request target or terms, so the policy engine never makes them.
 
 ### The gate runs itself (policy)
 
@@ -410,7 +424,8 @@ outbound HTTP would break the local-only constraint.)
 
 The same authorized layer is exposed as MCP tools, so a Claude/LLM agent can use
 Signpost as native tools (`whoami`, `inbox`, `events`, `create_request`,
-`decide`, `start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
+`decide` (incl. `route`/`counter`), `respond_info`, `respond_counter`,
+`start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
 `close`, `get_policy`, `set_policy`, …). It authenticates via `SIGNPOST_TOKEN`
 and shares the same local database — identical rules to the REST API.
 

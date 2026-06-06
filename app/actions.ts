@@ -21,6 +21,7 @@ import {
   rejectRelease,
   release,
   resolveCheck,
+  respondToCounter,
   respondToInfo,
   ServiceError,
   startSession,
@@ -76,12 +77,17 @@ export async function createRequestAction(_prev: FormState, formData: FormData):
 
 export async function decideAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const requestId = str(formData.get("request_id"));
+  const decision = str(formData.get("decision")) as GateDecisionKind;
   try {
-    decide(getDb(), requestId, {
-      decision: str(formData.get("decision")) as GateDecisionKind,
+    const db = getDb();
+    decide(db, requestId, {
+      decision,
       limits: lines(formData.get("limits")),
       reason: lines(formData.get("reason")),
+      route_to: str(formData.get("route_to")) || null,
     });
+    // A route re-addresses the request; run the new recipient's gate immediately.
+    if (decision === "route") autoScreen(db, requestId);
   } catch (err) {
     return fail(err);
   }
@@ -93,6 +99,17 @@ export async function respondInfoAction(_prev: FormState, formData: FormData): P
   const requestId = str(formData.get("request_id"));
   try {
     respondToInfo(getDb(), requestId, lines(formData.get("answers")));
+  } catch (err) {
+    return fail(err);
+  }
+  refresh(requestId);
+  return {};
+}
+
+export async function respondCounterAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const requestId = str(formData.get("request_id"));
+  try {
+    respondToCounter(getDb(), requestId, str(formData.get("accept")) === "true");
   } catch (err) {
     return fail(err);
   }

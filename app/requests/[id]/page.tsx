@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { getDb } from "@/lib/db";
-import { getRequestDetail } from "@/lib/queries";
+import { getRequestDetail, listIdentities } from "@/lib/queries";
 import { ActionForm } from "../../components/ActionForm";
 import {
   closeAction,
@@ -21,6 +21,7 @@ import {
   rejectReleaseAction,
   releaseAction,
   resolveCheckAction,
+  respondCounterAction,
   respondInfoAction,
   startSessionAction,
 } from "../../actions";
@@ -49,12 +50,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const detail = getRequestDetail(getDb(), id);
+  const db = getDb();
+  const detail = getRequestDetail(db, id);
   if (!detail) notFound();
 
   const { request: r, decisions, session, actions, receipt, events } = detail;
   const canDecide = ["screening", "needs_info", "needs_owner"].includes(r.status);
   const hidden = <input type="hidden" name="request_id" value={r.id} />;
+  // Targets the gate could route this request to (anyone but the current recipient).
+  const routeTargets = listIdentities(db).filter((i) => i.id !== r.to_id);
+  // The terms a pending counter proposed, for the sender's accept/decline panel.
+  const counter = [...decisions].reverse().find((d) => d.decision === "counter");
 
   return (
     <div className="space-y-6">
@@ -110,6 +116,9 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
                       <Badge variant="success">
                         auto{d.rule && d.rule !== "default" ? ` · ${d.rule}` : ""}
                       </Badge>
+                    )}
+                    {d.route_to && (
+                      <span className="font-mono text-xs text-muted-foreground">→ {d.route_to}</span>
                     )}
                     <span className="ml-auto font-mono text-xs text-muted-foreground">{d.gate}</span>
                   </div>
@@ -208,7 +217,68 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
                     <Textarea name="reason" rows={2} defaultValue={"Marketing analytics request within policy."} />
                     <Button type="submit" size="sm">Allow with limits</Button>
                   </ActionForm>
+                  <ActionForm action={decideAction} className="space-y-2">
+                    {hidden}
+                    <input type="hidden" name="decision" value="counter" />
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Counter
+                    </p>
+                    <Label>Proposed terms <span className="text-muted-foreground">(one per line)</span></Label>
+                    <Textarea name="limits" rows={2} defaultValue={"Scope to the header CTA only.\nShip behind a flag."} />
+                    <Label>Reason <span className="text-muted-foreground">(one per line)</span></Label>
+                    <Textarea name="reason" rows={2} defaultValue={"Original scope is too broad for auto-approval."} />
+                    <Button type="submit" size="sm" variant="outline">Counter to sender</Button>
+                  </ActionForm>
+                  {routeTargets.length > 0 && (
+                    <ActionForm action={decideAction} className="space-y-2">
+                      {hidden}
+                      <input type="hidden" name="decision" value="route" />
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Route
+                      </p>
+                      <Label htmlFor="route_to">Send to a different identity</Label>
+                      <Select name="route_to" defaultValue={routeTargets[0].id}>
+                        <SelectTrigger id="route_to"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {routeTargets.map((i) => (
+                            <SelectItem key={i.id} value={i.id}>{i.id}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Textarea name="reason" rows={2} defaultValue={"Better handled by another identity."} />
+                      <Button type="submit" size="sm" variant="outline">Route</Button>
+                    </ActionForm>
+                  )}
                 </div>
+              )}
+
+              {r.status === "countered" && (
+                <ActionForm action={respondCounterAction} className="space-y-2">
+                  {hidden}
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Counter from gate — respond as sender
+                  </p>
+                  {counter && (counter.limits.length > 0 || counter.reason.length > 0) && (
+                    <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                      {counter.limits.length > 0 && (
+                        <>
+                          <p className="text-xs font-semibold text-muted-foreground">Proposed terms</p>
+                          <Bullets items={counter.limits} />
+                        </>
+                      )}
+                      {counter.reason.length > 0 && (
+                        <>
+                          <p className="mt-2 text-xs font-semibold text-muted-foreground">Reason</p>
+                          <Bullets items={counter.reason} />
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Button name="accept" value="true" size="sm">Accept terms</Button>
+                    <Button name="accept" value="false" size="sm" variant="destructive">Decline</Button>
+                  </div>
+                </ActionForm>
               )}
 
               {r.status === "needs_info" && (

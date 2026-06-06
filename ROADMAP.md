@@ -139,6 +139,23 @@ identities don't change at runtime (true until a create-identity endpoint exists
 - A shared **`lib/ops.ts`** authorized layer now backs both REST and MCP.
 - 37 tests (loop, HTTP, policy, MCP); build + lint green.
 
+## Completed: Route & Counter (the negotiating gate)
+
+The two gate decisions that re-shape a request rather than admit/refuse it are
+now real (they previously parked the request at `needs_owner` and did nothing):
+
+- **`route`** re-addresses a request to a different identity and re-runs the
+  request-time gate under the *new* recipient's policy (auto-decide included).
+  Validated target (must exist; can't be the current recipient).
+- **`counter`** proposes terms (`limits`/`reason`); the request waits in a new
+  `countered` status until the sender accepts (→ `accepted`, work proceeds under
+  the terms) or declines (→ `denied`). New `POST /v1/requests/:id/counter`
+  (sender-only), `respond_counter` MCP tool, and owner-console UI for both.
+- The policy engine refuses `route`/`counter` as auto decisions — they need a
+  per-request target or terms a static rule can't supply.
+- 8 new tests (route re-address + re-screen, counter accept/decline, validation,
+  authorization, policy rejection); 45 total, build + lint green.
+
 ## Next Steps
 
 1. Execution-time and release-time policy (auto-resolve some `ask_gate` checks /

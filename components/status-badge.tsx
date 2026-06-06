@@ -8,6 +8,7 @@ const STATUS: Record<RequestStatus, { variant: Variant; label: string }> = {
   screening: { variant: "info", label: "screening" },
   needs_info: { variant: "warning", label: "needs info" },
   needs_owner: { variant: "warning", label: "needs owner" },
+  countered: { variant: "warning", label: "countered" },
   accepted: { variant: "secondary", label: "accepted" },
   denied: { variant: "destructive", label: "denied" },
   active: { variant: "info", label: "active" },

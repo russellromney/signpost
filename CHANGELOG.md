@@ -47,3 +47,15 @@
   - Long-poll on /v1/events?wait=ms (in-process notifier; no busy-polling).
   - MCP server (npm run mcp): 19 tools over lib/ops with identical authorization.
   - Tests now cover policy, MCP, owner inbox, and long-poll (37 total).
+- Made the `route` and `counter` gate decisions real (they previously parked the
+  request at `needs_owner` and did nothing):
+  - `route` re-addresses a request to another identity and re-screens it under
+    that recipient's policy; the target is validated.
+  - `counter` proposes terms the sender must accept or decline; new `countered`
+    status, `POST /v1/requests/:id/counter` (sender-only), `respond_counter` MCP
+    tool, and owner-console forms for both.
+  - The policy engine rejects `route`/`counter` as auto decisions (they need a
+    per-request target or terms).
+  - 8 new tests (45 total); build + lint green.
+- Rebuilt the web UI on Tailwind CSS v4 + shadcn/ui across all screens (inbox,
+  owner console, request detail) with a shared StatusBadge.

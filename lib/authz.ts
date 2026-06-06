@@ -55,6 +55,7 @@ export function rolesOf(db: DB, caller: string, req: SignpostRequest): Role[] {
 export const ACTION_ROLES: Record<string, Role[]> = {
   decide: ["gate", "owner"],
   respond_info: ["sender"],
+  respond_counter: ["sender"],
   start_session: ["worker"],
   session_action: ["worker"],
   resolve_check: ["gate", "owner"],

@@ -27,6 +27,7 @@ export type RequestStatus =
   | "screening" // at the owner's gate, awaiting a decision
   | "needs_info" // gate asked the sender for more information
   | "needs_owner" // gate escalated to the owner to decide
+  | "countered" // gate proposed modified terms; awaiting the sender's accept/decline
   | "accepted" // gate allowed work; a session may start
   | "denied" // gate refused; terminal
   | "active" // a worker session is running

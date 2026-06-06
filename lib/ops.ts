@@ -28,6 +28,7 @@ import {
   rejectRelease,
   release,
   resolveCheck,
+  respondToCounter,
   respondToInfo,
   startSession,
   ServiceError,
@@ -110,6 +111,9 @@ export function opDecide(db: DB, caller: string, id: string, input: DecideInput)
   const r = loadParty(db, caller, id);
   assertCan(db, caller, "decide", r);
   decide(db, id, input, caller);
+  // A route re-addresses the request and sends it back to screening; run the new
+  // recipient's gate immediately, exactly as on creation.
+  if (input.decision === "route") autoScreen(db, id);
   return detail(db, id);
 }
 
@@ -122,6 +126,19 @@ export function opRespondInfo(
   const r = loadParty(db, caller, id);
   assertCan(db, caller, "respond_info", r);
   respondToInfo(db, id, answers, caller);
+  return detail(db, id);
+}
+
+// The sender accepts or declines a gate's counter-offer.
+export function opRespondCounter(
+  db: DB,
+  caller: string,
+  id: string,
+  accept: boolean,
+): RequestDetail {
+  const r = loadParty(db, caller, id);
+  assertCan(db, caller, "respond_counter", r);
+  respondToCounter(db, id, accept, caller);
   return detail(db, id);
 }
 

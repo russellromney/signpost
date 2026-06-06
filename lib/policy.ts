@@ -10,14 +10,15 @@ import { getRequest } from "./queries";
 import { decide, ServiceError } from "./service";
 import type { GateDecisionKind, GatePolicy, PolicyRule, SignpostRequest } from "./types";
 
+// Decisions a policy may make automatically. `route` and `counter` are excluded
+// on purpose: route needs a per-request target and counter needs per-request
+// terms, neither of which a static rule can supply — they stay human decisions.
 const DECISIONS: GateDecisionKind[] = [
   "allow",
   "allow_with_limits",
   "deny",
   "ask_sender",
   "ask_owner",
-  "route",
-  "counter",
 ];
 
 export function getPolicy(db: DB, identity: string): GatePolicy | null {
@@ -36,14 +37,20 @@ export function getPolicy(db: DB, identity: string): GatePolicy | null {
 // Validate and persist a policy. Owner-only enforcement happens in the ops layer.
 export function setPolicy(db: DB, identity: string, policy: Partial<GatePolicy>): GatePolicy {
   const def = policy.default_decision ?? "ask_owner";
-  if (!DECISIONS.includes(def)) throw new ServiceError(`invalid default_decision "${def}"`);
+  if (!DECISIONS.includes(def)) {
+    throw new ServiceError(
+      `invalid default_decision "${def}" (route/counter can't be made by policy)`,
+    );
+  }
   const rules = Array.isArray(policy.rules) ? policy.rules : [];
   for (const r of rules) {
     if (!r || typeof r.name !== "string" || !r.name.trim()) {
       throw new ServiceError("each rule needs a name");
     }
     if (!DECISIONS.includes(r.decision)) {
-      throw new ServiceError(`rule "${r.name}" has invalid decision "${r.decision}"`);
+      throw new ServiceError(
+        `rule "${r.name}" has invalid decision "${r.decision}" (route/counter can't be made by policy)`,
+      );
     }
   }
   const ts = new Date().toISOString();

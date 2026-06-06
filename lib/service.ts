@@ -162,8 +162,10 @@ const DECISION_STATUS: Record<GateDecisionKind, RequestStatus> = {
   deny: "denied",
   ask_sender: "needs_info",
   ask_owner: "needs_owner",
-  route: "needs_owner",
-  counter: "needs_owner",
+  // route re-addresses the request and sends it back through the new recipient's
+  // gate (screening); counter proposes terms the sender must accept or decline.
+  route: "screening",
+  counter: "countered",
 };
 
 export interface DecideInput {
@@ -188,9 +190,27 @@ export function decide(
   if (!DECISION_STATUS[input.decision]) {
     throw new ServiceError(`unknown decision "${input.decision}"`);
   }
+  const limits = stringList(input.limits);
+  const reason = stringList(input.reason);
   const tx = db.transaction(() => {
     const req = require_(db, requestId);
     expectStatus(req, ["screening", "needs_info", "needs_owner"]);
+
+    // `route` re-addresses the request to a different identity; validate the
+    // target before recording anything. `counter` must carry the terms it
+    // proposes (limits and/or a reason), or the sender has nothing to weigh.
+    let routeTo: string | null = null;
+    if (input.decision === "route") {
+      routeTo = requireString(input.route_to, "route_to");
+      const exists = db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(routeTo);
+      if (!exists) throw new ServiceError(`Unknown route target ${routeTo}`);
+      if (routeTo === req.to_id) {
+        throw new ServiceError(`Request ${requestId} is already addressed to ${routeTo}`);
+      }
+    }
+    if (input.decision === "counter" && limits.length === 0 && reason.length === 0) {
+      throw new ServiceError("a counter must propose limits or a reason");
+    }
 
     // The `gate` column always records the stable gate identity; the event actor
     // records who actually decided (the owner, or the gate itself for an auto
@@ -207,20 +227,62 @@ export function decide(
       input.decision,
       meta.auto ? 1 : 0,
       meta.rule ?? null,
-      JSON.stringify(input.limits ?? []),
-      JSON.stringify(input.reason ?? []),
-      input.route_to ?? null,
+      JSON.stringify(limits),
+      JSON.stringify(reason),
+      routeTo,
       now(),
     );
-    setStatus(db, requestId, DECISION_STATUS[input.decision]);
     const label = meta.auto ? "Auto gate decision" : "Gate decision";
     logEvent(db, requestId, "gate_decision", who, `${label}: ${input.decision}`, {
       decision: input.decision,
-      limits: input.limits ?? [],
-      reason: input.reason ?? [],
+      limits,
+      reason,
       auto: Boolean(meta.auto),
       rule: meta.rule ?? null,
+      route_to: routeTo,
     });
+
+    if (input.decision === "route") {
+      // Re-address and send back to screening at the new recipient's gate.
+      db.prepare(`UPDATE requests SET to_id = ?, status = 'screening' WHERE id = ?`).run(
+        routeTo,
+        requestId,
+      );
+      logEvent(db, requestId, "request_routed", who, `Routed from ${req.to_id} to ${routeTo}.`, {
+        from: req.to_id,
+        to: routeTo,
+      });
+    } else {
+      setStatus(db, requestId, DECISION_STATUS[input.decision]);
+    }
+  });
+  tx();
+}
+
+// The sender responds to a counter. Accepting applies the proposed terms (the
+// request proceeds as accepted, under the limits recorded on the counter
+// decision); declining ends the request. Mirrors respondToInfo for ask_sender.
+export function respondToCounter(
+  db: DB,
+  requestId: string,
+  accept: boolean,
+  actor?: string,
+): void {
+  const tx = db.transaction(() => {
+    const req = require_(db, requestId);
+    expectStatus(req, ["countered"]);
+    const who = actor ?? req.from_id;
+    setStatus(db, requestId, accept ? "accepted" : "denied");
+    logEvent(
+      db,
+      requestId,
+      accept ? "counter_accepted" : "counter_declined",
+      who,
+      accept
+        ? "Sender accepted the gate's counter; proceeding under the proposed terms."
+        : "Sender declined the gate's counter; request closed.",
+      { accept },
+    );
   });
   tx();
 }

@@ -211,6 +211,7 @@ export function inboxFor(db: DB, caller: string): Record<string, SignpostRequest
     needs_exec_check: [], // gate/owner: worker is blocked on a risky step
     needs_release_check: [], // gate/owner: ready_for_release
     needs_info: [], // sender: gate asked you for more info
+    countered: [], // sender: gate proposed terms; accept or decline
     ready_to_start: [], // worker: accepted, start a session
     active: [], // worker: a session is running
     awaiting_receipt: [], // worker: released, write the receipt
@@ -230,6 +231,7 @@ export function inboxFor(db: DB, caller: string): Record<string, SignpostRequest
     else if (gateish && r.status === "blocked") buckets.needs_exec_check.push(r);
     else if (gateish && r.status === "ready_for_release") buckets.needs_release_check.push(r);
     else if (sender && r.status === "needs_info") buckets.needs_info.push(r);
+    else if (sender && r.status === "countered") buckets.countered.push(r);
     else if (worker && r.status === "accepted") buckets.ready_to_start.push(r);
     else if (worker && (r.status === "active" || r.status === "blocked")) buckets.active.push(r);
     else if (worker && r.status === "released") buckets.awaiting_receipt.push(r);
@@ -265,7 +267,11 @@ export function ownerInbox(db: DB, owner: string): OwnerInbox {
 export const INBOX_VIEWS: Array<{ key: string; label: string; statuses: RequestStatus[] }> = [
   { key: "needs_gate", label: "Needs Gate Decision", statuses: ["screening"] },
   { key: "active", label: "Active", statuses: ["accepted", "active"] },
-  { key: "needs_human", label: "Needs Human", statuses: ["needs_info", "needs_owner", "blocked"] },
+  {
+    key: "needs_human",
+    label: "Needs Human",
+    statuses: ["needs_info", "needs_owner", "blocked", "countered"],
+  },
   { key: "ready", label: "Ready For Release", statuses: ["ready_for_release", "released"] },
   { key: "done", label: "Done", statuses: ["closed", "denied"] },
 ];

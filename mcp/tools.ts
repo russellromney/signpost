@@ -118,18 +118,20 @@ export const TOOLS: ToolDef[] = [
   {
     name: "decide",
     description:
-      "Gate decision on a request (request-time gate): allow | allow_with_limits | deny | ask_sender | ask_owner.",
+      "Gate decision on a request (request-time gate): allow | allow_with_limits | deny | ask_sender | ask_owner | route | counter. `route` re-addresses to another identity (pass route_to); `counter` proposes terms the sender must accept (pass limits and/or reason).",
     inputSchema: {
       id: z.string(),
       decision: z.string(),
       limits: z.array(z.string()).optional(),
       reason: z.array(z.string()).optional(),
+      route_to: z.string().optional(),
     },
     run: ({ db, caller }, a) =>
       ops.opDecide(db, caller, s(a.id), {
         decision: s(a.decision) as GateDecisionKind,
         limits: sList(a.limits),
         reason: sList(a.reason),
+        route_to: a.route_to ? s(a.route_to) : null,
       }),
   },
   {
@@ -137,6 +139,13 @@ export const TOOLS: ToolDef[] = [
     description: "As the sender, answer a gate's ask_sender. Re-enters the gate.",
     inputSchema: { id: z.string(), answers: z.array(z.string()) },
     run: ({ db, caller }, a) => ops.opRespondInfo(db, caller, s(a.id), sList(a.answers)),
+  },
+  {
+    name: "respond_counter",
+    description:
+      "As the sender, accept or decline a gate's counter-offer. Accept (accept=true) proceeds under the proposed terms; decline closes the request.",
+    inputSchema: { id: z.string(), accept: z.boolean() },
+    run: ({ db, caller }, a) => ops.opRespondCounter(db, caller, s(a.id), a.accept === true),
   },
   {
     name: "start_session",
