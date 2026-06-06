@@ -41,10 +41,21 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
   decision    TEXT NOT NULL,
   scope       TEXT NOT NULL DEFAULT 'request',
   action_id   TEXT,
+  auto        INTEGER NOT NULL DEFAULT 0,
+  rule        TEXT,
   limits      TEXT NOT NULL DEFAULT '[]',
   reason      TEXT NOT NULL DEFAULT '[]',
   route_to    TEXT,
   created_at  TEXT NOT NULL
+);
+
+-- One gate policy per identity. The gate evaluates it at request time to
+-- auto-decide known cases and escalate only the exceptions to a human.
+CREATE TABLE IF NOT EXISTS gate_policies (
+  identity         TEXT PRIMARY KEY REFERENCES identities(id),
+  default_decision TEXT NOT NULL DEFAULT 'ask_owner',
+  rules            TEXT NOT NULL DEFAULT '[]',
+  updated_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -176,6 +187,8 @@ function migrate(db: DB): void {
   };
   add("gate_decisions", "scope", "TEXT NOT NULL DEFAULT 'request'");
   add("gate_decisions", "action_id", "TEXT");
+  add("gate_decisions", "auto", "INTEGER NOT NULL DEFAULT 0");
+  add("gate_decisions", "rule", "TEXT");
   add("session_actions", "gate_status", "TEXT");
 
   // Earlier builds gave idempotency_keys a single-column PK (key), which let the
@@ -215,6 +228,35 @@ export function seedIdentities(db: DB): void {
   tx();
 }
 
+// The default gate policy, mirroring examples/gate-policy.yml. Marketing
+// analytics/tracking requests from maya auto-allow within limits; everything
+// else escalates to the owner. This is what makes the gate run itself.
+const SEED_POLICY = {
+  identity: "russell/coding",
+  default_decision: "ask_owner",
+  rules: [
+    {
+      name: "marketing_analytics_requests",
+      from: "maya/marketing",
+      allow_goals_matching: ["analytics", "tracking"],
+      decision: "allow_with_limits",
+      limits: [
+        "May open pull requests.",
+        "May not merge.",
+        "May not edit billing, auth, or data export code.",
+        "Must ask owner before delegating to another identity.",
+      ],
+    },
+  ],
+};
+
+export function seedPolicies(db: DB): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO gate_policies (identity, default_decision, rules, updated_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(SEED_POLICY.identity, SEED_POLICY.default_decision, JSON.stringify(SEED_POLICY.rules), now());
+}
+
 // Open a fresh database at `path`, apply schema and seed. Used directly by tests.
 export function createDb(path: string): DB {
   if (path !== ":memory:") {
@@ -223,6 +265,7 @@ export function createDb(path: string): DB {
   const db = new Database(path);
   applySchema(db);
   seedIdentities(db);
+  seedPolicies(db);
   return db;
 }
 

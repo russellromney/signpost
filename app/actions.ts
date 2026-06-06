@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getDb } from "@/lib/db";
+import { autoScreen } from "@/lib/policy";
 import {
   askGate,
   closeWithReceipt,
@@ -40,7 +41,8 @@ function refresh(requestId: string) {
 }
 
 export async function createRequestAction(formData: FormData) {
-  const id = createRequest(getDb(), {
+  const db = getDb();
+  const id = createRequest(db, {
     from_id: str(formData.get("from_id")),
     to_id: str(formData.get("to_id")),
     goal: str(formData.get("goal")),
@@ -49,6 +51,8 @@ export async function createRequestAction(formData: FormData) {
     context: lines(formData.get("context")),
     deadline: str(formData.get("deadline")) || null,
   });
+  // Run the request-time gate: policy auto-decides, or leaves it for a human.
+  autoScreen(db, id);
   revalidatePath("/");
   redirect(`/requests/${id}`);
 }

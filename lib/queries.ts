@@ -53,6 +53,8 @@ function mapDecision(r: Row): GateDecision {
     decision: r.decision as GateDecision["decision"],
     scope: (r.scope as GateDecision["scope"]) ?? "request",
     action_id: (r.action_id as string) ?? null,
+    auto: Boolean(r.auto),
+    rule: (r.rule as string) ?? null,
     limits: json(r.limits),
     reason: json(r.reason),
     route_to: (r.route_to as string) ?? null,

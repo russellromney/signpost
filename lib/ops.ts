@@ -6,6 +6,7 @@
 // Deliberately free of any `next` import so it runs in a plain Node (MCP) context.
 import { assertCan, AuthzError, rolesOf } from "./authz";
 import type { DB } from "./db";
+import { autoScreen, getPolicy, setPolicy } from "./policy";
 import {
   eventsSince,
   getRequest,
@@ -34,7 +35,7 @@ import {
   type DecideInput,
   type ReceiptInput,
 } from "./service";
-import type { Identity, RequestStatus, Role, SignpostRequest } from "./types";
+import type { GatePolicy, Identity, RequestStatus, Role, SignpostRequest } from "./types";
 
 // Thrown when a request does not exist OR the caller is not party to it. Both map
 // to 404 so endpoints never reveal the existence of requests you can't see.
@@ -98,7 +99,11 @@ export function opCreateRequest(
 ): { id: string; replayed: boolean } {
   const from = input.from_id ?? caller;
   if (from !== caller) throw new AuthzError(`${caller} may not create a request as ${from}`);
-  return createRequestIdempotent(db, idempotencyKey, { ...input, from_id: from });
+  const result = createRequestIdempotent(db, idempotencyKey, { ...input, from_id: from });
+  // Run the request-time gate immediately: the policy auto-decides known cases
+  // and only exceptions are left for a human. Skip on idempotent replay.
+  if (!result.replayed) autoScreen(db, result.id);
+  return result;
 }
 
 export function opDecide(db: DB, caller: string, id: string, input: DecideInput): RequestDetail {
@@ -200,4 +205,32 @@ export function opClose(
   assertCan(db, caller, "close", r);
   const receipt_id = closeWithReceipt(db, id, input, caller);
   return { receipt_id, ...detail(db, id) };
+}
+
+// --- gate policy -------------------------------------------------------------
+
+function ownerOfIdentity(db: DB, identity: string): string {
+  return identityById(db, identity)?.owner ?? identity.split("/")[0];
+}
+
+// The identity itself or its owner may read the policy.
+export function opGetPolicy(db: DB, caller: string, identity: string): GatePolicy | null {
+  if (caller !== identity && caller !== ownerOfIdentity(db, identity)) {
+    throw new AuthzError(`${caller} may not read the policy for ${identity}`);
+  }
+  return getPolicy(db, identity);
+}
+
+// Only the owner may change an identity's gate policy.
+export function opSetPolicy(
+  db: DB,
+  caller: string,
+  identity: string,
+  policy: Partial<GatePolicy>,
+): GatePolicy {
+  if (!identityById(db, identity)) throw new NotFoundError("not found");
+  if (caller !== ownerOfIdentity(db, identity)) {
+    throw new AuthzError(`${caller} may not set the policy for ${identity}`);
+  }
+  return setPolicy(db, identity, policy);
 }

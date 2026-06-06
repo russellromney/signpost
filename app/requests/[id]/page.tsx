@@ -101,6 +101,14 @@ export default async function RequestDetailPage({
               <div key={d.id} className="event">
                 <div>
                   <span className="type">{d.decision}</span>{" "}
+                  <span className="badge" style={{ background: "#f1f5f9", color: "#475569" }}>
+                    {d.scope}
+                  </span>{" "}
+                  {d.auto && (
+                    <span className="badge" style={{ background: "#ecfdf5", color: "#15803d" }}>
+                      auto{d.rule && d.rule !== "default" ? ` · ${d.rule}` : ""}
+                    </span>
+                  )}{" "}
                   <span className="when">{d.created_at}</span>
                 </div>
                 <div className="mono muted">{d.gate}</div>

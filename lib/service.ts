@@ -170,7 +170,18 @@ export interface DecideInput {
   route_to?: string | null;
 }
 
-export function decide(db: DB, requestId: string, input: DecideInput, actor?: string): void {
+export interface DecideMeta {
+  auto?: boolean; // the gate policy made this decision automatically
+  rule?: string; // the matched policy rule (or "default")
+}
+
+export function decide(
+  db: DB,
+  requestId: string,
+  input: DecideInput,
+  actor?: string,
+  meta: DecideMeta = {},
+): void {
   if (!DECISION_STATUS[input.decision]) {
     throw new ServiceError(`unknown decision "${input.decision}"`);
   }
@@ -179,27 +190,33 @@ export function decide(db: DB, requestId: string, input: DecideInput, actor?: st
     expectStatus(req, ["screening", "needs_info", "needs_owner"]);
 
     // The `gate` column always records the stable gate identity; the event actor
-    // records who actually decided (e.g. the owner standing in for the gate).
+    // records who actually decided (the owner, or the gate itself for an auto
+    // decision).
     const gate = gateOf(db, req);
     const who = actor ?? gate;
     db.prepare(
-      `INSERT INTO gate_decisions (id, request_id, gate, decision, scope, action_id, limits, reason, route_to, created_at)
-       VALUES (?, ?, ?, ?, 'request', NULL, ?, ?, ?, ?)`,
+      `INSERT INTO gate_decisions (id, request_id, gate, decision, scope, action_id, auto, rule, limits, reason, route_to, created_at)
+       VALUES (?, ?, ?, ?, 'request', NULL, ?, ?, ?, ?, ?, ?)`,
     ).run(
       newDecisionId(),
       requestId,
       gate,
       input.decision,
+      meta.auto ? 1 : 0,
+      meta.rule ?? null,
       JSON.stringify(input.limits ?? []),
       JSON.stringify(input.reason ?? []),
       input.route_to ?? null,
       now(),
     );
     setStatus(db, requestId, DECISION_STATUS[input.decision]);
-    logEvent(db, requestId, "gate_decision", who, `Gate decision: ${input.decision}`, {
+    const label = meta.auto ? "Auto gate decision" : "Gate decision";
+    logEvent(db, requestId, "gate_decision", who, `${label}: ${input.decision}`, {
       decision: input.decision,
       limits: input.limits ?? [],
       reason: input.reason ?? [],
+      auto: Boolean(meta.auto),
+      rule: meta.rule ?? null,
     });
   });
   tx();

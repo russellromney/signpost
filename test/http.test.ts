@@ -127,7 +127,37 @@ test("wrong role: a party with the wrong role gets 403", async () => {
   assert.equal((await call(decideR, { token: MAYA, id, body: { decision: "allow" } })).status, 403);
 });
 
+test("policy auto-decides a matching request on arrival (no human)", async () => {
+  // maya's tracking request matches the seeded policy -> auto allow_with_limits.
+  const created = await call(createReq, {
+    token: MAYA,
+    body: { to: "russell/coding", goal: "Add launch tracking to the CTA.", definition_of_done: ["x"] },
+  });
+  const got = await call(getReq, { token: MAYA, id: created.data.id });
+  assert.equal(got.data.request.status, "accepted");
+  assert.equal(got.data.decisions[0].auto, true);
+  assert.equal(got.data.decisions[0].rule, "marketing_analytics_requests");
+});
+
+test("manual escalation: a non-matching request escalates, then the gate decides", async () => {
+  const created = await call(createReq, {
+    token: MAYA,
+    body: { to: "russell/coding", goal: "Refactor the onboarding email.", definition_of_done: ["x"] },
+  });
+  const id = created.data.id;
+  // No rule matched -> default ask_owner, recorded as an auto decision.
+  let got = await call(getReq, { token: MAYA, id });
+  assert.equal(got.data.request.status, "needs_owner");
+  assert.equal(got.data.decisions[0].auto, true);
+  assert.equal(got.data.decisions[0].decision, "ask_owner");
+  // The owner then decides manually.
+  const r = await call(decideR, { token: OWNER, id, body: { decision: "allow" } });
+  assert.equal(r.data.request.status, "accepted");
+  assert.equal(r.data.decisions[1].auto, false);
+});
+
 test("full loop over HTTP handlers ends closed with a receipt", async () => {
+  // Matching goal -> auto-accepted by policy; no manual decision needed.
   const created = await call(createReq, {
     token: MAYA,
     body: {
@@ -139,16 +169,10 @@ test("full loop over HTTP handlers ends closed with a receipt", async () => {
   });
   const id = created.data.id;
   assert.equal(created.status, 201);
-
-  // gate allows with limits
-  let r = await call(decideR, {
-    token: GATE,
-    id,
-    body: { decision: "allow_with_limits", limits: ["May open PRs."], reason: ["ok"] },
-  });
-  assert.equal(r.data.request.status, "accepted");
+  assert.equal((await call(getReq, { token: MAYA, id })).data.request.status, "accepted");
 
   // worker starts, updates, asks gate (blocks), gate resolves, completes
+  let r;
   assert.equal((await call(sessionR, { token: CODING, id })).data.request.status, "active");
   await call(actionsR, { token: CODING, id, body: { action: "post_update", summary: "wired it" } });
   r = await call(actionsR, { token: CODING, id, body: { action: "ask_gate", summary: "external API?" } });

@@ -68,10 +68,31 @@ export interface GateDecision {
   decision: GateDecisionKind;
   scope: GateScope;
   action_id: string | null;
+  auto: boolean; // true if the gate policy made this decision automatically
+  rule: string | null; // the policy rule (or "default") that produced an auto decision
   limits: string[];
   reason: string[];
   route_to: string | null;
   created_at: string;
+}
+
+// A gate policy: ordered rules the gate evaluates at request time, plus a
+// fallback decision when no rule matches.
+export interface PolicyRule {
+  name: string;
+  from?: string; // match only requests from this sender
+  allow_goals_matching?: string[]; // match if the goal contains any of these (case-insensitive)
+  decision: GateDecisionKind;
+  limits?: string[];
+  reason?: string[];
+  triggers?: string[]; // execution-time hints; not evaluated at request time yet
+}
+
+export interface GatePolicy {
+  identity: string;
+  default_decision: GateDecisionKind;
+  rules: PolicyRule[];
+  updated_at?: string;
 }
 
 export type SessionStatus = "active" | "complete" | "cancelled";
