@@ -1,0 +1,15 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# local SQLite database
+/data/
+
+# build / misc
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+npm-debug.log*

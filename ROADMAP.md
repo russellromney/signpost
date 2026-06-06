@@ -50,4 +50,53 @@ The current repo contains only the initial spec, schemas, and examples.
 
 ### Commands
 
-No build commands yet. Add them when the prototype stack is chosen.
+```bash
+npm install     # install dependencies
+npm run seed    # create + seed ./data/signpost.db
+npm run dev     # run the app at http://localhost:3000
+npm run build   # production build
+npm start       # run the production build
+npm test        # end-to-end loop test (temp SQLite db)
+npm run lint    # eslint
+```
+
+## Completed: First Local Prototype
+
+The smallest vertical slice is built and verified locally.
+
+- Stack: Next.js (App Router) + TypeScript + SQLite (better-sqlite3).
+- Entities modeled: identity, request, gate decision, session, session action,
+  receipt, and an append-only event log.
+- Seeded identities: `russell`, `russell/gate`, `russell/coding`, `maya/marketing`.
+- Inbox with five views: Needs Gate Decision, Active, Needs Human,
+  Ready For Release, Done.
+- Request detail page: from/to, goal, definition of done, constraints, gate
+  decision, session log, receipt, and full event history.
+- Manual action buttons for the entire loop: create request, allow, allow with
+  limits, deny, ask sender, ask owner, create/start session, post session
+  update, mark ready for release, release, reject release, close with receipt.
+- Every state change appends to the audit log; nothing is "done" without a receipt.
+- Tiny JSON API mirrors the service layer.
+- Verified: `npm test` (5 passing), `npm run lint` (clean), `npm run build`
+  (clean), and the full loop exercised against the running server.
+
+### Verified end to end
+
+`maya/marketing -> russell/gate -> russell/coding`, allow-with-limits, session,
+update, ready, release, receipt, close — with the detail page showing the
+ordered event history:
+`request_created -> routed_to_gate -> gate_decision -> session_started ->
+session_update -> ready_for_release -> released -> closed`.
+
+## Next Steps
+
+1. Inline error feedback in the UI (currently service errors throw; surface them
+   on the form with `useActionState`).
+2. The execution-time gate: route flagged risky session actions
+   (`requires_gate`) through the gate before they proceed.
+3. Persisted, editable gate policies per identity (the `examples/gate-policy.yml`
+   shape) instead of fully manual decisions.
+4. Owner inbox (Approvals, Escalations, Exceptions, Audit).
+5. Counter and route decisions in the UI.
+6. Only after receipts accumulate: consider reputation and policy learning
+   (still out of scope for now).

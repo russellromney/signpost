@@ -260,23 +260,102 @@ POST /sessions/:id/actions
 POST /requests/:id/release
 ```
 
+## Running the Local Prototype
+
+The repository now includes the first working prototype: a local-only Next.js app
+backed by SQLite that exercises the whole loop:
+
+```text
+request -> gate -> session -> release -> receipt
+```
+
+It is local-only by design. There is no chat, no auth, and no GitHub, Slack,
+email, or agent integration. One request type only.
+
+### Stack
+
+- Next.js (App Router) + TypeScript
+- SQLite via better-sqlite3
+- Server Actions for the buttons, plus a small JSON API
+
+### Setup
+
+```bash
+npm install
+npm run seed   # creates ./data/signpost.db and seeds the four identities
+```
+
+Seeded identities: `russell`, `russell/gate`, `russell/coding`, `maya/marketing`.
+
+### Dev
+
+```bash
+npm run dev    # http://localhost:3000
+```
+
+### Build and run
+
+```bash
+npm run build
+npm start
+```
+
+### Test and lint
+
+```bash
+npm test       # end-to-end test of the loop against a temp SQLite db
+npm run lint
+```
+
+The database file lives at `./data/signpost.db` by default. Override the location
+with the `SIGNPOST_DB` environment variable (tests use a throwaway temp file).
+
+### Walkthrough
+
+1. Open the inbox. The five views are **Needs Gate Decision**, **Active**,
+   **Needs Human**, **Ready For Release**, and **Done**.
+2. Expand **Create request** and send one from `maya/marketing` to
+   `russell/coding`. It routes through `russell/gate` and lands in
+   **Needs Gate Decision**.
+3. Open the request. Use **Allow with limits** at the gate.
+4. **Create / start session** for `russell/coding`.
+5. **Post session update**, then **Mark ready for release**.
+6. **Release**, then **Close with receipt** (evidence is required).
+7. The request detail page shows the full, append-only event history.
+
+### JSON API
+
+The same service layer is exposed as a tiny API:
+
+```http
+GET  /api/identities
+GET  /api/requests
+POST /api/requests                      { from, to, goal, definition_of_done, ... }
+GET  /api/requests/:id
+POST /api/requests/:id/decisions        { decision, limits, reason }
+POST /api/requests/:id/sessions         {}  |  { action: "post_update", summary }
+POST /api/requests/:id/release          {} | { op: "ready" | "reject" | "close", ... }
+```
+
 ## Repository Layout
 
 ```text
 README.md
 ROADMAP.md
 CHANGELOG.md
-schemas/
-  identity.schema.json
-  request.schema.json
-  gate-decision.schema.json
-  session-action.schema.json
-  receipt.schema.json
-examples/
-  request.yml
-  gate-policy.yml
+schemas/                 first machine-readable object contracts
+examples/                sample request and gate policy
+app/                     Next.js pages, server actions, and JSON API
+  page.tsx               inbox (five views + create request)
+  requests/[id]/         request detail with actions and event history
+  api/                   JSON API route handlers
+lib/                     db, types, service (write side), queries (read side)
+test/                    end-to-end loop test
+scripts/seed.ts          create + seed the local database
 ```
 
 ## Status
 
-This repository is the starting spec for Signpost. The next step is to build the smallest API and inbox UI that can exercise the lifecycle end to end.
+The starting spec plus a working local prototype. The next steps are tracked in
+`ROADMAP.md` — hardening the gate (policies, the execution-time gate) and adding
+inline error feedback in the UI.
