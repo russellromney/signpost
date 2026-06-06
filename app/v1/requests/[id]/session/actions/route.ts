@@ -1,7 +1,5 @@
-import { authed, body, json, loadParty } from "@/lib/api";
-import { assertCan } from "@/lib/authz";
-import { getRequestDetail } from "@/lib/queries";
-import { askGate, markReadyForRelease, postUpdate, ServiceError } from "@/lib/service";
+import { authed, body, json } from "@/lib/api";
+import { opSessionAction, type SessionActionKindInput } from "@/lib/ops";
 
 // Typed session actions from the worker:
 //   post_update -> a progress note
@@ -10,23 +8,7 @@ import { askGate, markReadyForRelease, postUpdate, ServiceError } from "@/lib/se
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return authed(req, async ({ db, caller }) => {
     const { id } = await params;
-    const r = loadParty(db, caller, id);
-    assertCan(db, caller, "session_action", r);
-
-    const b = await body<{ action?: string; summary?: string }>(req);
-    switch (b.action) {
-      case "post_update":
-        postUpdate(db, id, b.summary ?? "");
-        break;
-      case "ask_gate":
-        askGate(db, id, b.summary ?? "");
-        break;
-      case "complete":
-        markReadyForRelease(db, id, b.summary);
-        break;
-      default:
-        throw new ServiceError("action must be post_update, ask_gate, or complete");
-    }
-    return json(getRequestDetail(db, id), 201);
+    const b = await body<{ action?: SessionActionKindInput; summary?: string }>(req);
+    return json(opSessionAction(db, caller, id, b.action as SessionActionKindInput, b.summary), 201);
   });
 }

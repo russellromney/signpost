@@ -1,6 +1,6 @@
 import { authed, json } from "@/lib/api";
-import { listIdentities } from "@/lib/queries";
+import { opIdentities } from "@/lib/ops";
 
 export async function GET(req: Request) {
-  return authed(req, ({ db }) => json({ identities: listIdentities(db) }));
+  return authed(req, ({ db }) => json({ identities: opIdentities(db) }));
 }
