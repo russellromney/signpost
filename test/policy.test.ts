@@ -10,7 +10,8 @@ import { createDb } from "../lib/db";
 import { autoScreen, evaluatePolicy, getPolicy, setPolicy } from "../lib/policy";
 import { opGetPolicy, opSetPolicy, opCreateRequest } from "../lib/ops";
 import { createRequest, ServiceError } from "../lib/service";
-import { getRequest, getRequestDetail } from "../lib/queries";
+import { getRequest, getRequestDetail, ownerInbox } from "../lib/queries";
+import { startSession, askGate } from "../lib/service";
 import { AuthzError } from "../lib/authz";
 
 function freshDb() {
@@ -127,6 +128,34 @@ test("setPolicy validates; getPolicy round-trips", () => {
     });
     assert.equal(saved.default_decision, "deny");
     assert.equal(getPolicy(db, "russell/coding")!.rules[0].name, "r1");
+  } finally {
+    cleanup();
+  }
+});
+
+test("owner inbox buckets approvals, escalations, and exceptions", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    // An escalation: non-matching request -> needs_owner.
+    const esc = opCreateRequest(db, "maya/marketing", {
+      to_id: "russell/coding",
+      goal: "delete prod",
+      definition_of_done: ["x"],
+    }).id;
+    // An exception: auto-accepted, started, then blocked on a risky step.
+    const exc = opCreateRequest(db, "maya/marketing", {
+      to_id: "russell/coding",
+      goal: "add tracking",
+      definition_of_done: ["x"],
+    }).id;
+    startSession(db, exc);
+    askGate(db, exc, "call external API?");
+
+    const inbox = ownerInbox(db, "russell");
+    assert.ok(inbox.escalations.some((r) => r.id === esc));
+    assert.ok(inbox.exceptions.some((r) => r.id === exc));
+    // maya is not an owner/gate of these, so her owner inbox is empty.
+    assert.equal(ownerInbox(db, "maya").escalations.length, 0);
   } finally {
     cleanup();
   }

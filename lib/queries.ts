@@ -238,6 +238,29 @@ export function inboxFor(db: DB, caller: string): Record<string, SignpostRequest
   return buckets;
 }
 
+// Owner-centric inbox: the smaller set of things that actually need the owner,
+// per the README ("Approvals, Escalations, Exceptions, Audit"). Computed over the
+// requests where the caller holds the gate or owner role.
+export interface OwnerInbox {
+  approvals: SignpostRequest[]; // a yes/no is needed: manual request gate or release check
+  escalations: SignpostRequest[]; // the policy/gate escalated a decision to the owner
+  exceptions: SignpostRequest[]; // a worker is blocked on an execution-time check
+  recent: SignpostRequest[]; // recently finished (closed/denied)
+}
+
+export function ownerInbox(db: DB, owner: string): OwnerInbox {
+  const out: OwnerInbox = { approvals: [], escalations: [], exceptions: [], recent: [] };
+  for (const r of listRequests(db)) {
+    const roles = rolesOf(db, owner, r);
+    if (!roles.includes("gate") && !roles.includes("owner")) continue;
+    if (r.status === "screening" || r.status === "ready_for_release") out.approvals.push(r);
+    else if (r.status === "needs_owner") out.escalations.push(r);
+    else if (r.status === "blocked") out.exceptions.push(r);
+    else if (r.status === "closed" || r.status === "denied") out.recent.push(r);
+  }
+  return out;
+}
+
 // The inbox views from the spec. A request appears in exactly one bucket.
 export const INBOX_VIEWS: Array<{ key: string; label: string; statuses: RequestStatus[] }> = [
   { key: "needs_gate", label: "Needs Gate Decision", statuses: ["screening"] },

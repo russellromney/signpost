@@ -16,6 +16,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Signpost
           </Link>
           <span className="tagline">request → gate → session → release → receipt</span>
+          <Link href="/owner" style={{ marginLeft: "auto" }}>
+            Owner console
+          </Link>
         </header>
         <main className="container">{children}</main>
       </body>
