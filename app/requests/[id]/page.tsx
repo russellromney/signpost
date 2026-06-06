@@ -11,6 +11,8 @@ import {
   postUpdateAction,
   rejectReleaseAction,
   releaseAction,
+  resolveCheckAction,
+  respondInfoAction,
   startSessionAction,
 } from "../../actions";
 
@@ -19,7 +21,8 @@ export const dynamic = "force-dynamic";
 function badgeClass(status: RequestStatus): string {
   if (status === "denied") return "badge denied";
   if (status === "closed" || status === "released") return "badge closed";
-  if (status === "needs_info" || status === "needs_owner") return `badge ${status}`;
+  if (status === "needs_info" || status === "needs_owner" || status === "blocked")
+    return `badge ${status === "blocked" ? "needs_owner" : status}`;
   return "badge";
 }
 
@@ -208,6 +211,42 @@ export default async function RequestDetailPage({
                   <div className="btn-row">
                     <button className="primary" type="submit">
                       Allow with limits
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
+
+            {r.status === "needs_info" && (
+              <form action={respondInfoAction} style={{ marginTop: 12 }}>
+                <input type="hidden" name="request_id" value={r.id} />
+                <h3>Respond as sender</h3>
+                <label>
+                  Answer the gate <span className="hint">one per line</span>
+                  <textarea name="answers" defaultValue={"Scope is the header and pricing page CTAs only."} />
+                </label>
+                <div className="btn-row">
+                  <button type="submit">Send info (back to gate)</button>
+                </div>
+              </form>
+            )}
+
+            {r.status === "blocked" && (
+              <>
+                <h3>Execution check</h3>
+                <p className="muted">The worker flagged a risky step. Resolve it.</p>
+                <form action={resolveCheckAction}>
+                  <input type="hidden" name="request_id" value={r.id} />
+                  <label>
+                    Reason <span className="hint">one per line</span>
+                    <textarea name="reason" defaultValue={"Within the stated limits."} />
+                  </label>
+                  <div className="btn-row">
+                    <button name="decision" value="allow" className="good">
+                      Allow action
+                    </button>
+                    <button name="decision" value="deny" className="danger">
+                      Deny action
                     </button>
                   </div>
                 </form>

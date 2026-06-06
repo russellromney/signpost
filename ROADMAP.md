@@ -88,15 +88,38 @@ ordered event history:
 `request_created -> routed_to_gate -> gate_decision -> session_started ->
 session_update -> ready_for_release -> released -> closed`.
 
+## Completed: Agent-Facing `/v1` API
+
+Signpost now has an authenticated REST API so agents — not just the human
+console — can drive the whole loop.
+
+- **Auth**: one bearer token per identity (`tokens` table, deterministic seeds).
+  Every call is made *as* an identity. Missing/invalid token → 401.
+- **Authorization**: derived from the caller's role on each request
+  (sender / worker / gate / owner). Wrong role → 403 (`lib/authz.ts`).
+- **Protocol gaps closed**:
+  - `respond_to_info` — the sender can now answer an `ask_sender`, returning the
+    request to the gate (the old `needs_info` dead end is fixed).
+  - Real execution-time gate — `ask_gate` blocks the request; the gate resolves
+    it via `/checks` (allow resumes work, deny refuses the step).
+- **Read/poll surface**: `/v1/me`, `/v1/inbox` (bucketed by role),
+  `/v1/events?since=N` (cursor feed over the audit log, scoped to the caller),
+  and filtered `/v1/requests?role=&status=`.
+- **Idempotency**: `Idempotency-Key` on request creation for safe retries.
+- Verified: 14 tests passing (loop + auth + authz + protocol + feed), lint and
+  build clean, and the full loop driven over HTTP as four different identities
+  with 401/403 enforcement.
+
 ## Next Steps
 
 1. Inline error feedback in the UI (currently service errors throw; surface them
    on the form with `useActionState`).
-2. The execution-time gate: route flagged risky session actions
-   (`requires_gate`) through the gate before they proceed.
-3. Persisted, editable gate policies per identity (the `examples/gate-policy.yml`
-   shape) instead of fully manual decisions.
-4. Owner inbox (Approvals, Escalations, Exceptions, Audit).
-5. Counter and route decisions in the UI.
-6. Only after receipts accumulate: consider reputation and policy learning
+2. Persisted, editable gate policies per identity (the `examples/gate-policy.yml`
+   shape) so the gate can auto-decide and only escalate exceptions to humans.
+3. Long-poll or webhooks on `/v1/events` so agents don't busy-poll.
+4. Pagination/cursors on `/v1/requests`; rotating (non-deterministic) tokens.
+5. Owner inbox views (Approvals, Escalations, Exceptions, Audit) and counter/route
+   decisions in the UI.
+6. Optional: an MCP server over the same service layer for LLM-native agents.
+7. Only after receipts accumulate: consider reputation and policy learning
    (still out of scope for now).

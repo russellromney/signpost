@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
   request_id  TEXT NOT NULL REFERENCES requests(id),
   gate        TEXT NOT NULL,
   decision    TEXT NOT NULL,
+  scope       TEXT NOT NULL DEFAULT 'request',
+  action_id   TEXT,
   limits      TEXT NOT NULL DEFAULT '[]',
   reason      TEXT NOT NULL DEFAULT '[]',
   route_to    TEXT,
@@ -60,6 +62,7 @@ CREATE TABLE IF NOT EXISTS session_actions (
   action        TEXT NOT NULL,
   summary       TEXT,
   requires_gate INTEGER NOT NULL DEFAULT 0,
+  gate_status   TEXT,
   created_at    TEXT NOT NULL
 );
 
@@ -85,9 +88,30 @@ CREATE TABLE IF NOT EXISTS events (
   created_at  TEXT NOT NULL
 );
 
+-- One bearer token per identity. Authenticates API callers as an identity.
+CREATE TABLE IF NOT EXISTS tokens (
+  token       TEXT PRIMARY KEY,
+  identity    TEXT NOT NULL REFERENCES identities(id),
+  created_at  TEXT NOT NULL
+);
+
+-- Idempotency keys so agents can safely retry create calls.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key         TEXT PRIMARY KEY,
+  identity    TEXT NOT NULL,
+  request_id  TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_request ON events(request_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 `;
+
+// Deterministic, readable tokens so the prototype is easy to drive with curl.
+// A real deployment would issue random secrets; these are fine for local-only.
+export function tokenFor(identity: string): string {
+  return `sk_${identity.replace(/\//g, "_")}`;
+}
 
 // The four identities the prototype ships with.
 const SEED_IDENTITIES: Array<{
@@ -136,6 +160,21 @@ export function applySchema(db: DB): void {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
+}
+
+// Add columns to databases created before the v1 API. Safe to run repeatedly.
+function migrate(db: DB): void {
+  const hasColumn = (table: string, column: string): boolean =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
+      (c) => c.name === column,
+    );
+  const add = (table: string, column: string, def: string) => {
+    if (!hasColumn(table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  };
+  add("gate_decisions", "scope", "TEXT NOT NULL DEFAULT 'request'");
+  add("gate_decisions", "action_id", "TEXT");
+  add("session_actions", "gate_status", "TEXT");
 }
 
 export function seedIdentities(db: DB): void {
@@ -143,10 +182,14 @@ export function seedIdentities(db: DB): void {
     `INSERT OR IGNORE INTO identities (id, kind, owner, display_name, description, gate, created_at)
      VALUES (@id, @kind, @owner, @display_name, @description, @gate, @created_at)`,
   );
+  const insertToken = db.prepare(
+    `INSERT OR IGNORE INTO tokens (token, identity, created_at) VALUES (?, ?, ?)`,
+  );
   const ts = now();
   const tx = db.transaction(() => {
     for (const ident of SEED_IDENTITIES) {
       insert.run({ ...ident, created_at: ts });
+      insertToken.run(tokenFor(ident.id), ident.id, ts);
     }
   });
   tx();

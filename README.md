@@ -323,18 +323,89 @@ with the `SIGNPOST_DB` environment variable (tests use a throwaway temp file).
 6. **Release**, then **Close with receipt** (evidence is required).
 7. The request detail page shows the full, append-only event history.
 
-### JSON API
+## The `/v1` API (for agents)
 
-The same service layer is exposed as a tiny API:
+The web UI is the owner's exception console. The **API is the product** — it's
+how agents actually live in Signpost. Both the UI and the API call the same
+service layer, so they can never drift.
+
+### Authentication
+
+Every call is made *as* an identity, proven by a bearer token. The prototype
+seeds one deterministic token per identity (`sk_<identity-with-_>`):
+
+```text
+russell          sk_russell
+russell/gate     sk_russell_gate
+russell/coding   sk_russell_coding
+maya/marketing   sk_maya_marketing
+```
+
+```bash
+curl localhost:3000/v1/me -H "Authorization: Bearer sk_maya_marketing"
+```
+
+A real deployment would issue rotating secrets; the boundary — "every call is
+made as an identity" — is what's real here.
+
+### Authorization
+
+What you may do is derived from your **role on each request**, not a separate
+permissions table:
+
+| Role     | Who            | May                                                    |
+| -------- | -------------- | ------------------------------------------------------ |
+| `sender` | request `from` | respond to `ask_sender`, read status/receipt           |
+| `worker` | request `to`   | start a session, post actions, ask the gate, submit receipt |
+| `gate`   | recipient gate | decide (request / execution / release checks)          |
+| `owner`  | recipient owner| gate powers + release                                  |
+
+Wrong role → `403`. Bad/absent token → `401`. Illegal state transition → `400`.
+
+### Endpoints
 
 ```http
-GET  /api/identities
-GET  /api/requests
-POST /api/requests                      { from, to, goal, definition_of_done, ... }
-GET  /api/requests/:id
-POST /api/requests/:id/decisions        { decision, limits, reason }
-POST /api/requests/:id/sessions         {}  |  { action: "post_update", summary }
-POST /api/requests/:id/release          {} | { op: "ready" | "reject" | "close", ... }
+GET  /v1/me                              # who am I
+GET  /v1/identities
+GET  /v1/inbox                           # my actionable work, bucketed by role
+GET  /v1/events?since=N&request=ID       # cursor feed of the audit log
+
+GET  /v1/requests?role=worker&status=accepted   # find my work
+POST /v1/requests                        # create (Idempotency-Key supported)
+GET  /v1/requests/:id
+
+POST /v1/requests/:id/decisions          # gate: allow|allow_with_limits|deny|ask_sender|ask_owner
+POST /v1/requests/:id/info               # sender answers an ask_sender
+POST /v1/requests/:id/session            # worker claims + starts
+POST /v1/requests/:id/session/actions    # { action: post_update | ask_gate | complete }
+POST /v1/requests/:id/checks             # gate resolves an execution check
+POST /v1/requests/:id/release            # release, or { op: "reject", reason }
+POST /v1/requests/:id/receipt            # close with a receipt
+```
+
+The gate's three moments are all here: request-time (`/decisions`),
+execution-time (`ask_gate` → blocked → `/checks`), and release-time
+(`/release`, `/receipt`).
+
+### Agent loops
+
+```
+# worker (russell/coding)
+inbox = GET /v1/inbox
+for r in inbox.ready_to_start: POST /v1/requests/{r}/session
+POST .../session/actions {action:"post_update", summary}
+POST .../session/actions {action:"ask_gate", summary}   # risky -> blocks
+POST .../session/actions {action:"complete"}
+poll GET /v1/events?since=cursor
+
+# sender (maya/marketing)
+id = POST /v1/requests {to, goal, definition_of_done}
+on needs_info: POST /v1/requests/{id}/info {answers}
+on closed:     GET /v1/requests/{id}/receipt
+
+# gate (russell/gate — human now, policy later)
+inbox = GET /v1/inbox  -> needs_decision / needs_exec_check / needs_release_check
+POST /v1/requests/{id}/decisions {decision, limits, reason}
 ```
 
 ## Repository Layout
@@ -345,17 +416,26 @@ ROADMAP.md
 CHANGELOG.md
 schemas/                 first machine-readable object contracts
 examples/                sample request and gate policy
-app/                     Next.js pages, server actions, and JSON API
+app/                     Next.js pages and the /v1 API
   page.tsx               inbox (five views + create request)
   requests/[id]/         request detail with actions and event history
-  api/                   JSON API route handlers
-lib/                     db, types, service (write side), queries (read side)
-test/                    end-to-end loop test
+  actions.ts             server actions for the owner console
+  v1/                    the authenticated agent-facing REST API
+lib/
+  db.ts                  SQLite schema, seeds, tokens, migrations
+  types.ts               runtime contracts
+  service.ts             write side: the full loop, one transaction per step
+  queries.ts             read side: detail, inbox, filtered lists, event feed
+  auth.ts                bearer-token -> identity
+  authz.ts               role-in-request -> what you may do
+  api.ts                 route-handler plumbing (auth + error mapping)
+test/                    end-to-end loop + v1 (auth, authz, feed) tests
 scripts/seed.ts          create + seed the local database
 ```
 
 ## Status
 
-The starting spec plus a working local prototype. The next steps are tracked in
-`ROADMAP.md` — hardening the gate (policies, the execution-time gate) and adding
-inline error feedback in the UI.
+The starting spec, a working local prototype, and an authenticated `/v1` REST
+API that agents can drive end to end. Next steps are tracked in `ROADMAP.md` —
+persisted gate policies, long-poll/webhooks on the event feed, and inline error
+feedback in the UI.

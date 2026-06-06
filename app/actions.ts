@@ -1,12 +1,14 @@
 "use server";
 
-// Server actions that back the manual buttons in the UI. Each one reads a
-// FormData, calls the service layer, and revalidates the affected pages.
+// Server actions that back the buttons in the owner console. The web UI is a
+// trusted god-mode client: it calls the service layer directly (no token auth)
+// and acts as whichever identity the step belongs to. Agents use the /v1 API.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getDb } from "@/lib/db";
 import {
+  askGate,
   closeWithReceipt,
   createRequest,
   decide,
@@ -14,11 +16,12 @@ import {
   postUpdate,
   rejectRelease,
   release,
+  resolveCheck,
+  respondToInfo,
   startSession,
 } from "@/lib/service";
 import type { GateDecisionKind, ReceiptStatus } from "@/lib/types";
 
-// Split a textarea into a list of trimmed, non-empty lines.
 function lines(value: FormDataEntryValue | null): string[] {
   if (typeof value !== "string") return [];
   return value
@@ -60,6 +63,12 @@ export async function decideAction(formData: FormData) {
   refresh(requestId);
 }
 
+export async function respondInfoAction(formData: FormData) {
+  const requestId = str(formData.get("request_id"));
+  respondToInfo(getDb(), requestId, lines(formData.get("answers")));
+  refresh(requestId);
+}
+
 export async function startSessionAction(formData: FormData) {
   const requestId = str(formData.get("request_id"));
   startSession(getDb(), requestId);
@@ -68,12 +77,19 @@ export async function startSessionAction(formData: FormData) {
 
 export async function postUpdateAction(formData: FormData) {
   const requestId = str(formData.get("request_id"));
-  postUpdate(
-    getDb(),
-    requestId,
-    str(formData.get("summary")),
-    formData.get("requires_gate") === "on",
-  );
+  const summary = str(formData.get("summary"));
+  // A risky step routes through the execution-time gate instead of a plain note.
+  if (formData.get("requires_gate") === "on") {
+    askGate(getDb(), requestId, summary);
+  } else {
+    postUpdate(getDb(), requestId, summary);
+  }
+  refresh(requestId);
+}
+
+export async function resolveCheckAction(formData: FormData) {
+  const requestId = str(formData.get("request_id"));
+  resolveCheck(getDb(), requestId, str(formData.get("decision")) !== "deny", lines(formData.get("reason")));
   refresh(requestId);
 }
 

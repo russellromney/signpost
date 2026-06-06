@@ -30,6 +30,7 @@ export type RequestStatus =
   | "accepted" // gate allowed work; a session may start
   | "denied" // gate refused; terminal
   | "active" // a worker session is running
+  | "blocked" // worker hit a risky step; awaiting an execution-gate check
   | "ready_for_release" // worker says done; awaiting release check
   | "released" // release check passed; awaiting receipt
   | "closed"; // closed with a receipt; terminal
@@ -57,11 +58,16 @@ export type GateDecisionKind =
   | "route"
   | "counter";
 
+// The gate checks three moments in the loop; a decision records which one.
+export type GateScope = "request" | "execution" | "release";
+
 export interface GateDecision {
   id: string;
   request_id: string;
   gate: string;
   decision: GateDecisionKind;
+  scope: GateScope;
+  action_id: string | null;
   limits: string[];
   reason: string[];
   route_to: string | null;
@@ -88,6 +94,9 @@ export type SessionActionKind =
   | "complete"
   | "cancel";
 
+// When an action needs an execution-time gate check, gate_status tracks it.
+export type ActionGateStatus = "pending" | "allowed" | "denied";
+
 export interface SessionAction {
   id: string;
   session_id: string;
@@ -95,6 +104,7 @@ export interface SessionAction {
   action: SessionActionKind;
   summary: string | null;
   requires_gate: boolean;
+  gate_status: ActionGateStatus | null;
   created_at: string;
 }
 
@@ -119,5 +129,16 @@ export interface EventRecord {
   actor: string;
   summary: string;
   data: Record<string, unknown>;
+  created_at: string;
+  // Monotonic cursor (the row's implicit rowid). Present on feed reads.
+  seq?: number;
+}
+
+// A caller's relationship to a particular request. Authorization derives from it.
+export type Role = "sender" | "worker" | "gate" | "owner";
+
+export interface Identity_Token {
+  token: string;
+  identity: string;
   created_at: string;
 }

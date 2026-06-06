@@ -116,6 +116,25 @@ export function createRequest(db: DB, input: CreateRequestInput): string {
   return id;
 }
 
+// Create-with-idempotency: a repeated call with the same key returns the same
+// request instead of creating a duplicate. Lets agents retry safely.
+export function createRequestIdempotent(
+  db: DB,
+  key: string | null,
+  input: CreateRequestInput,
+): { id: string; replayed: boolean } {
+  if (!key) return { id: createRequest(db, input), replayed: false };
+  const existing = db
+    .prepare(`SELECT request_id FROM idempotency_keys WHERE key = ?`)
+    .get(key) as { request_id: string } | undefined;
+  if (existing) return { id: existing.request_id, replayed: true };
+  const id = createRequest(db, input);
+  db.prepare(
+    `INSERT INTO idempotency_keys (key, identity, request_id, created_at) VALUES (?, ?, ?, ?)`,
+  ).run(key, input.from_id, id, now());
+  return { id, replayed: false };
+}
+
 // --- 2. gate decisions -------------------------------------------------------
 
 const DECISION_STATUS: Record<GateDecisionKind, RequestStatus> = {
@@ -136,18 +155,18 @@ export interface DecideInput {
   gate?: string;
 }
 
-export function decide(db: DB, requestId: string, input: DecideInput): void {
+export function decide(db: DB, requestId: string, input: DecideInput, actor?: string): void {
   const req = require_(db, requestId);
   expectStatus(req, ["screening", "needs_info", "needs_owner"]);
 
-  const gate = input.gate ?? `${req.to_id.split("/")[0]}/gate`;
+  const gate = actor ?? input.gate ?? `${req.to_id.split("/")[0]}/gate`;
   const nextStatus = DECISION_STATUS[input.decision];
   const ts = now();
 
   const tx = db.transaction(() => {
     db.prepare(
-      `INSERT INTO gate_decisions (id, request_id, gate, decision, limits, reason, route_to, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO gate_decisions (id, request_id, gate, decision, scope, action_id, limits, reason, route_to, created_at)
+       VALUES (?, ?, ?, ?, 'request', NULL, ?, ?, ?, ?)`,
     ).run(
       newDecisionId(),
       requestId,
@@ -168,10 +187,34 @@ export function decide(db: DB, requestId: string, input: DecideInput): void {
   tx();
 }
 
+// The sender responds to an ask_sender. Re-enters the gate for screening.
+export function respondToInfo(
+  db: DB,
+  requestId: string,
+  answers: string[],
+  actor?: string,
+): void {
+  const req = require_(db, requestId);
+  expectStatus(req, ["needs_info"]);
+  const clean = answers.filter((s) => s.trim());
+  if (clean.length === 0) throw new ServiceError("an answer is required");
+  const who = actor ?? req.from_id;
+  const tx = db.transaction(() => {
+    setStatus(db, requestId, "screening");
+    logEvent(db, requestId, "info_provided", who, clean.join(" "), { answers: clean });
+  });
+  tx();
+}
+
 // --- 3. session --------------------------------------------------------------
 
 export function startSession(db: DB, requestId: string): string {
   const req = require_(db, requestId);
+  // Idempotent-ish: if a session already exists, surface it rather than dup.
+  const existing = db
+    .prepare(`SELECT id FROM sessions WHERE request_id = ? AND status = 'active' LIMIT 1`)
+    .get(requestId) as { id: string } | undefined;
+  if (existing) throw new ServiceError(`Request ${requestId} already has an active session`);
   expectStatus(req, ["accepted"]);
   const id = newSessionId();
   const ts = now();
@@ -181,8 +224,8 @@ export function startSession(db: DB, requestId: string): string {
       `INSERT INTO sessions (id, identity, request_id, status, created_at) VALUES (?, ?, ?, 'active', ?)`,
     ).run(id, req.to_id, requestId, ts);
     db.prepare(
-      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, created_at)
-       VALUES (?, ?, ?, 'accept', ?, 0, ?)`,
+      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, gate_status, created_at)
+       VALUES (?, ?, ?, 'accept', ?, 0, NULL, ?)`,
     ).run(newActionId(), id, req.to_id, "Session accepted the request and started work.", ts);
     setStatus(db, requestId, "active");
     logEvent(db, requestId, "session_started", req.to_id, `Session ${id} started.`, {
@@ -193,12 +236,7 @@ export function startSession(db: DB, requestId: string): string {
   return id;
 }
 
-export function postUpdate(
-  db: DB,
-  requestId: string,
-  summary: string,
-  requiresGate = false,
-): void {
+export function postUpdate(db: DB, requestId: string, summary: string): void {
   const req = require_(db, requestId);
   expectStatus(req, ["active"]);
   if (!summary.trim()) throw new ServiceError("update summary is required");
@@ -207,12 +245,85 @@ export function postUpdate(
 
   const tx = db.transaction(() => {
     db.prepare(
-      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, created_at)
-       VALUES (?, ?, ?, 'post_update', ?, ?, ?)`,
-    ).run(newActionId(), session.id, req.to_id, summary.trim(), requiresGate ? 1 : 0, ts);
-    logEvent(db, requestId, "session_update", req.to_id, summary.trim(), {
-      requires_gate: requiresGate,
+      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, gate_status, created_at)
+       VALUES (?, ?, ?, 'post_update', ?, 0, NULL, ?)`,
+    ).run(newActionId(), session.id, req.to_id, summary.trim(), ts);
+    logEvent(db, requestId, "session_update", req.to_id, summary.trim());
+  });
+  tx();
+}
+
+// The execution-time gate. A worker flags a risky step; the request blocks until
+// the gate resolves it. This is the second of the gate's three moments.
+export function askGate(db: DB, requestId: string, summary: string): string {
+  const req = require_(db, requestId);
+  expectStatus(req, ["active"]);
+  if (!summary.trim()) throw new ServiceError("a description of the risky action is required");
+  const session = activeSession(db, requestId);
+  const actionId = newActionId();
+  const ts = now();
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, gate_status, created_at)
+       VALUES (?, ?, ?, 'block', ?, 1, 'pending', ?)`,
+    ).run(actionId, session.id, req.to_id, summary.trim(), ts);
+    setStatus(db, requestId, "blocked");
+    logEvent(db, requestId, "execution_check_requested", req.to_id, summary.trim(), {
+      action: actionId,
     });
+  });
+  tx();
+  return actionId;
+}
+
+// The gate resolves a pending execution check. Allow lets the worker proceed;
+// deny refuses the risky step (the worker continues without it).
+export function resolveCheck(
+  db: DB,
+  requestId: string,
+  allow: boolean,
+  reason: string[] = [],
+  actor?: string,
+): void {
+  const req = require_(db, requestId);
+  expectStatus(req, ["blocked"]);
+  const session = activeSession(db, requestId);
+  const pending = db
+    .prepare(
+      `SELECT id FROM session_actions WHERE session_id = ? AND gate_status = 'pending' ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(session.id) as { id: string } | undefined;
+  if (!pending) throw new ServiceError("no pending execution check to resolve");
+
+  const gate = actor ?? `${req.to_id.split("/")[0]}/gate`;
+  const ts = now();
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE session_actions SET gate_status = ? WHERE id = ?`).run(
+      allow ? "allowed" : "denied",
+      pending.id,
+    );
+    db.prepare(
+      `INSERT INTO gate_decisions (id, request_id, gate, decision, scope, action_id, limits, reason, route_to, created_at)
+       VALUES (?, ?, ?, ?, 'execution', ?, '[]', ?, NULL, ?)`,
+    ).run(
+      newDecisionId(),
+      requestId,
+      gate,
+      allow ? "allow" : "deny",
+      pending.id,
+      JSON.stringify(reason),
+      ts,
+    );
+    setStatus(db, requestId, "active");
+    logEvent(
+      db,
+      requestId,
+      allow ? "execution_check_allowed" : "execution_check_denied",
+      gate,
+      reason.join(" ") || (allow ? "Risky action allowed." : "Risky action denied."),
+      { action: pending.id },
+    );
   });
   tx();
 }
@@ -226,8 +337,8 @@ export function markReadyForRelease(db: DB, requestId: string, summary?: string)
 
   const tx = db.transaction(() => {
     db.prepare(
-      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, created_at)
-       VALUES (?, ?, ?, 'complete', ?, 0, ?)`,
+      `INSERT INTO session_actions (id, session_id, identity, action, summary, requires_gate, gate_status, created_at)
+       VALUES (?, ?, ?, 'complete', ?, 0, NULL, ?)`,
     ).run(newActionId(), session.id, req.to_id, note, ts);
     setStatus(db, requestId, "ready_for_release");
     logEvent(db, requestId, "ready_for_release", req.to_id, note);
