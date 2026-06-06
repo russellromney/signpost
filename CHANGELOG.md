@@ -37,3 +37,13 @@
     hardcoded identity.
   - Added HTTP-level tests that drive the real route handlers end to end
     (auth, error mapping, idempotency, the full loop).
+- Self-deciding gate and a second surface:
+  - Extracted lib/ops.ts, the authorized operations layer shared by REST + MCP.
+  - Gate policy engine (request-time): per-identity policies auto-decide known
+    cases and escalate only exceptions; auto decisions recorded with their rule.
+    GET/PUT /v1/identities/:id/policy (owner-only writes).
+  - Owner console at /owner (approvals / escalations / exceptions / audit).
+  - Inline UI error feedback via useActionState + <ActionForm>.
+  - Long-poll on /v1/events?wait=ms (in-process notifier; no busy-polling).
+  - MCP server (npm run mcp): 19 tools over lib/ops with identical authorization.
+  - Tests now cover policy, MCP, owner inbox, and long-poll (37 total).

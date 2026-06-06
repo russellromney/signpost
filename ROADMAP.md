@@ -125,10 +125,29 @@ in-transaction guards are race-free for the single-process prototype but would
 need `BEGIN IMMEDIATE` for multi-process writers; the identity cache assumes
 identities don't change at runtime (true until a create-identity endpoint exists).
 
+## Completed: Self-Deciding Gate + Second Surface
+
+- **Gate policy engine (request-time):** per-identity policies (`gate_policies`,
+  seeded from `examples/gate-policy.yml`); on arrival a request is auto-decided
+  or escalated, so humans see only exceptions. Auto decisions carry their rule in
+  the audit trail. `GET/PUT /v1/identities/:id/policy` (owner-only writes).
+- **Owner console** (`/owner`): Approvals / Escalations / Exceptions / Audit.
+- **Inline UI errors** via `useActionState` + `<ActionForm>`.
+- **Long-poll** on `/v1/events?wait=ms` (in-process notifier; no busy-polling).
+- **MCP server** (`npm run mcp`): 19 tools over the shared `lib/ops` layer, same
+  authorization as REST, verified over a real stdio JSON-RPC handshake.
+- A shared **`lib/ops.ts`** authorized layer now backs both REST and MCP.
+- 37 tests (loop, HTTP, policy, MCP); build + lint green.
+
 ## Next Steps
 
-1. Inline error feedback in the UI (currently service errors throw; surface them
-   on the form with `useActionState`).
+1. Execution-time and release-time policy (auto-resolve some `ask_gate` checks /
+   release checks via trigger rules) — request-time is done.
+2. Networked webhooks on the event feed (a hosted, non-local mode).
+3. Pagination/cursors on `/v1/requests`; rotating (non-deterministic) tokens.
+4. `BEGIN IMMEDIATE` for multi-process write safety (single-process is race-free).
+5. A create-identity endpoint (then invalidate the authz identity cache).
+6. Inline error feedback polish and a policy editor in the owner UI.
 2. Persisted, editable gate policies per identity (the `examples/gate-policy.yml`
    shape) so the gate can auto-decide and only escalate exceptions to humans.
 3. Long-poll or webhooks on `/v1/events` so agents don't busy-poll.

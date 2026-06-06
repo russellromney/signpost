@@ -368,7 +368,7 @@ Wrong role → `403`. Bad/absent token → `401`. Illegal state transition → `
 GET  /v1/me                              # who am I
 GET  /v1/identities
 GET  /v1/inbox                           # my actionable work, bucketed by role
-GET  /v1/events?since=N&request=ID       # cursor feed of the audit log
+GET  /v1/events?since=N&request=ID&wait=MS   # cursor feed; wait=ms long-polls
 
 GET  /v1/requests?role=worker&status=accepted   # find my work
 POST /v1/requests                        # create (Idempotency-Key supported)
@@ -381,11 +381,65 @@ POST /v1/requests/:id/session/actions    # { action: post_update | ask_gate | co
 POST /v1/requests/:id/checks             # gate resolves an execution check
 POST /v1/requests/:id/release            # release, or { op: "reject", reason }
 POST /v1/requests/:id/receipt            # close with a receipt
+
+GET  /v1/identities/:id/policy           # read a gate policy (identity or owner)
+PUT  /v1/identities/:id/policy           # set a gate policy (owner only)
 ```
 
 The gate's three moments are all here: request-time (`/decisions`),
 execution-time (`ask_gate` → blocked → `/checks`), and release-time
 (`/release`, `/receipt`).
+
+### The gate runs itself (policy)
+
+The gate is the product, so it doesn't wait for a human by default. On arrival a
+request is screened against the recipient's **policy**: matching requests are
+auto-decided (e.g. marketing tracking → `allow_with_limits`) and only the
+exceptions land in a human's inbox. Auto decisions are recorded in the audit
+trail with their rule (`auto · marketing_analytics_requests`). With no policy,
+the request stays manual. Edit policy with `PUT /v1/identities/:id/policy`
+(owner only); the seeded default mirrors `examples/gate-policy.yml`.
+
+### Long-poll
+
+`GET /v1/events?wait=25000` holds the request until a new visible event arrives
+(or the timeout), so agents don't busy-poll. (Webhooks are intentionally absent —
+outbound HTTP would break the local-only constraint.)
+
+## MCP server (LLM-native agents)
+
+The same authorized layer is exposed as MCP tools, so a Claude/LLM agent can use
+Signpost as native tools (`whoami`, `inbox`, `events`, `create_request`,
+`decide`, `start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
+`close`, `get_policy`, `set_policy`, …). It authenticates via `SIGNPOST_TOKEN`
+and shares the same local database — identical rules to the REST API.
+
+```bash
+SIGNPOST_TOKEN=sk_russell_coding npm run mcp
+```
+
+Mount it in a Claude client config:
+
+```json
+{
+  "mcpServers": {
+    "signpost": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/signpost",
+      "env": { "SIGNPOST_TOKEN": "sk_russell_coding", "SIGNPOST_DB": "/path/to/signpost/data/signpost.db" }
+    }
+  }
+}
+```
+
+## Owner console
+
+`/owner` is the smaller, owner-facing inbox per the README model: **Approvals**
+(a yes/no is needed), **Escalations** (the policy sent these up), **Exceptions**
+(a worker is blocked on a risky step), and **Audit** (recent activity). With
+policy in place, this is where a human spends their time — handling exceptions,
+not routing messages.
 
 ### Agent loops
 
@@ -403,7 +457,7 @@ id = POST /v1/requests {to, goal, definition_of_done}
 on needs_info: POST /v1/requests/{id}/info {answers}
 on closed:     GET /v1/requests/{id}/receipt
 
-# gate (russell/gate — human now, policy later)
+# gate (russell/gate — policy auto-decides; humans get the exceptions)
 inbox = GET /v1/inbox  -> needs_decision / needs_exec_check / needs_release_check
 POST /v1/requests/{id}/decisions {decision, limits, reason}
 ```
@@ -418,24 +472,30 @@ schemas/                 first machine-readable object contracts
 examples/                sample request and gate policy
 app/                     Next.js pages and the /v1 API
   page.tsx               inbox (five views + create request)
+  owner/                 owner console (approvals/escalations/exceptions/audit)
   requests/[id]/         request detail with actions and event history
+  components/            ActionForm (inline-error client form)
   actions.ts             server actions for the owner console
   v1/                    the authenticated agent-facing REST API
 lib/
-  db.ts                  SQLite schema, seeds, tokens, migrations
+  db.ts                  SQLite schema, seeds, tokens, policies, migrations
   types.ts               runtime contracts
   service.ts             write side: the full loop, one transaction per step
   queries.ts             read side: detail, inbox, filtered lists, event feed
-  auth.ts                bearer-token -> identity
-  authz.ts               role-in-request -> what you may do
+  ops.ts                 authorized operations (shared by REST + MCP)
+  policy.ts              gate policy engine + auto-screening
+  auth.ts / authz.ts     bearer-token -> identity / role-in-request -> permissions
+  bus.ts                 in-process notifier for the event-feed long-poll
   api.ts                 route-handler plumbing (auth + error mapping)
-test/                    end-to-end loop + v1 (auth, authz, feed) tests
+mcp/                     MCP server (tools.ts + stdio server.ts)
+test/                    loop, v1 (HTTP), policy, and mcp tests
 scripts/seed.ts          create + seed the local database
 ```
 
 ## Status
 
-The starting spec, a working local prototype, and an authenticated `/v1` REST
-API that agents can drive end to end. Next steps are tracked in `ROADMAP.md` —
-persisted gate policies, long-poll/webhooks on the event feed, and inline error
-feedback in the UI.
+A working local prototype of the whole loop with a self-deciding gate: an
+authenticated `/v1` REST API, an MCP server, a policy engine that auto-decides
+and escalates only exceptions, long-poll on the event feed, an owner console, and
+inline UI errors. Next steps are tracked in `ROADMAP.md` (execution/release-time
+policy, networked webhooks, rotating tokens, pagination).
