@@ -1,9 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
+import { StatusBadge } from "@/components/status-badge";
 import { getDb } from "@/lib/db";
 import { getRequestDetail } from "@/lib/queries";
-import type { RequestStatus } from "@/lib/types";
 import { ActionForm } from "../../components/ActionForm";
 import {
   closeAction,
@@ -19,18 +27,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function badgeClass(status: RequestStatus): string {
-  if (status === "denied") return "badge denied";
-  if (status === "closed" || status === "released") return "badge closed";
-  if (status === "needs_info" || status === "needs_owner" || status === "blocked")
-    return `badge ${status === "blocked" ? "needs_owner" : status}`;
-  return "badge";
-}
-
-function List({ items }: { items: string[] }) {
-  if (items.length === 0) return <span className="muted">—</span>;
+function Bullets({ items }: { items: string[] }) {
+  if (items.length === 0) return <span className="text-sm text-muted-foreground">—</span>;
   return (
-    <ul className="tight">
+    <ul className="list-disc space-y-0.5 pl-5 text-sm">
       {items.map((it, i) => (
         <li key={i}>{it}</li>
       ))}
@@ -38,357 +38,306 @@ function List({ items }: { items: string[] }) {
   );
 }
 
-export default async function RequestDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="text-sm">{children}</dd>
+    </div>
+  );
+}
+
+export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const detail = getRequestDetail(getDb(), id);
   if (!detail) notFound();
 
   const { request: r, decisions, session, actions, receipt, events } = detail;
   const canDecide = ["screening", "needs_info", "needs_owner"].includes(r.status);
+  const hidden = <input type="hidden" name="request_id" value={r.id} />;
 
   return (
-    <>
-      <p>
-        <Link href="/">← Inbox</Link>
-      </p>
+    <div className="space-y-6">
+      <Link
+        href="/"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" /> Inbox
+      </Link>
 
-      <div className="panel">
-        <h1>{r.goal}</h1>
-        <p>
-          <span className="mono">{r.from_id}</span> → <span className="mono">{r.to_id}</span>{" "}
-          <span className={badgeClass(r.status)}>{r.status}</span>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">{r.goal}</h1>
+          <StatusBadge status={r.status} />
+        </div>
+        <p className="flex items-center gap-1.5 font-mono text-sm text-muted-foreground">
+          {r.from_id} <ArrowRight className="size-3.5" /> {r.to_id}
+          <span className="text-muted-foreground/60">· {r.id}</span>
         </p>
-        <p className="mono muted">{r.id}</p>
       </div>
 
-      <div className="grid-2">
-        <div>
-          {/* Request packet */}
-          <div className="panel">
-            <h2>Request</h2>
-            <dl>
-              <dt>From</dt>
-              <dd className="mono">{r.from_id}</dd>
-              <dt>To</dt>
-              <dd className="mono">{r.to_id}</dd>
-              <dt>Goal</dt>
-              <dd>{r.goal}</dd>
-              <dt>Definition of done</dt>
-              <dd>
-                <List items={r.definition_of_done} />
-              </dd>
-              <dt>Constraints</dt>
-              <dd>
-                <List items={r.constraints} />
-              </dd>
-              <dt>Context</dt>
-              <dd>
-                <List items={r.context} />
-              </dd>
-              <dt>Deadline</dt>
-              <dd>{r.deadline ?? <span className="muted">—</span>}</dd>
-            </dl>
-          </div>
-
-          {/* Gate decisions */}
-          <div className="panel">
-            <h2>Gate decision</h2>
-            {decisions.length === 0 && <p className="muted">No decision yet.</p>}
-            {decisions.map((d) => (
-              <div key={d.id} className="event">
-                <div>
-                  <span className="type">{d.decision}</span>{" "}
-                  <span className="badge" style={{ background: "#f1f5f9", color: "#475569" }}>
-                    {d.scope}
-                  </span>{" "}
-                  {d.auto && (
-                    <span className="badge" style={{ background: "#ecfdf5", color: "#15803d" }}>
-                      auto{d.rule && d.rule !== "default" ? ` · ${d.rule}` : ""}
-                    </span>
-                  )}{" "}
-                  <span className="when">{d.created_at}</span>
-                </div>
-                <div className="mono muted">{d.gate}</div>
-                {d.limits.length > 0 && (
-                  <>
-                    <strong>Limits</strong>
-                    <List items={d.limits} />
-                  </>
-                )}
-                {d.reason.length > 0 && (
-                  <>
-                    <strong>Reason</strong>
-                    <List items={d.reason} />
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Session log */}
-          <div className="panel">
-            <h2>Session log</h2>
-            {!session && <p className="muted">No session yet.</p>}
-            {session && (
-              <>
-                <p className="mono muted">
-                  {session.id} · {session.identity} · {session.status}
-                </p>
-                {actions.map((a) => (
-                  <div key={a.id} className="event">
-                    <div>
-                      <span className="type">{a.action}</span>{" "}
-                      <span className="when">{a.created_at}</span>
-                      {a.requires_gate ? <span className="badge needs_owner"> needs gate</span> : null}
-                    </div>
-                    {a.summary && <div>{a.summary}</div>}
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-
-          {/* Receipt */}
-          <div className="panel">
-            <h2>Receipt</h2>
-            {!receipt && <p className="muted">No receipt yet. No receipt, no done.</p>}
-            {receipt && (
-              <dl>
-                <dt>Receipt</dt>
-                <dd className="mono">
-                  {receipt.id} · {receipt.status}
-                </dd>
-                <dt>Artifacts</dt>
-                <dd>
-                  <List items={receipt.artifacts} />
-                </dd>
-                <dt>Evidence</dt>
-                <dd>
-                  <List items={receipt.evidence} />
-                </dd>
-                <dt>Assumptions</dt>
-                <dd>
-                  <List items={receipt.assumptions} />
-                </dd>
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Left: the record */}
+        <div className="space-y-6 lg:col-span-2">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Request</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <Field label="From"><span className="font-mono">{r.from_id}</span></Field>
+                <Field label="To"><span className="font-mono">{r.to_id}</span></Field>
+                <Field label="Definition of done"><Bullets items={r.definition_of_done} /></Field>
+                <Field label="Constraints"><Bullets items={r.constraints} /></Field>
+                <Field label="Context"><Bullets items={r.context} /></Field>
+                <Field label="Deadline">{r.deadline ?? <span className="text-muted-foreground">—</span>}</Field>
               </dl>
-            )}
-          </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Gate decisions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {decisions.length === 0 && <p className="text-sm text-muted-foreground">No decision yet.</p>}
+              {decisions.map((d) => (
+                <div key={d.id} className="space-y-1.5 border-l-2 pl-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium">{d.decision}</span>
+                    <Badge variant="outline">{d.scope}</Badge>
+                    {d.auto && (
+                      <Badge variant="success">
+                        auto{d.rule && d.rule !== "default" ? ` · ${d.rule}` : ""}
+                      </Badge>
+                    )}
+                    <span className="ml-auto font-mono text-xs text-muted-foreground">{d.gate}</span>
+                  </div>
+                  {d.limits.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground">Limits</p>
+                      <Bullets items={d.limits} />
+                    </div>
+                  )}
+                  {d.reason.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground">Reason</p>
+                      <Bullets items={d.reason} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Session log</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {!session && <p className="text-sm text-muted-foreground">No session yet.</p>}
+              {session && (
+                <>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    {session.id} · {session.identity} · {session.status}
+                  </p>
+                  {actions.map((a) => (
+                    <div key={a.id} className="space-y-0.5 border-l-2 pl-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{a.action}</span>
+                        {a.requires_gate && <Badge variant="warning">needs gate</Badge>}
+                        {a.gate_status && <Badge variant="outline">{a.gate_status}</Badge>}
+                      </div>
+                      {a.summary && <p className="text-sm text-muted-foreground">{a.summary}</p>}
+                    </div>
+                  ))}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Receipt</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!receipt && (
+                <p className="text-sm text-muted-foreground">No receipt yet. No receipt, no done.</p>
+              )}
+              {receipt && (
+                <dl className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Receipt">
+                    <span className="font-mono">{receipt.id}</span> · {receipt.status}
+                  </Field>
+                  <Field label="Artifacts"><Bullets items={receipt.artifacts} /></Field>
+                  <Field label="Evidence"><Bullets items={receipt.evidence} /></Field>
+                  <Field label="Assumptions"><Bullets items={receipt.assumptions} /></Field>
+                </dl>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Actions + event history */}
-        <div>
-          <div className="panel">
-            <h2>Actions</h2>
-
-            {canDecide && (
-              <>
-                <h3>Gate</h3>
-                <ActionForm action={decideAction} className="btn-row">
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <button name="decision" value="allow" className="good">
-                    Allow
-                  </button>
-                  <button name="decision" value="deny" className="danger">
-                    Deny
-                  </button>
-                  <button name="decision" value="ask_sender">
-                    Ask sender
-                  </button>
-                  <button name="decision" value="ask_owner">
-                    Ask owner
-                  </button>
-                </ActionForm>
-
-                <ActionForm action={decideAction} style={{ marginTop: 12 }}>
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <input type="hidden" name="decision" value="allow_with_limits" />
-                  <label>
-                    Limits <span className="hint">one per line</span>
-                    <textarea
+        {/* Right: actions + history */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Actions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {canDecide && (
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Gate</p>
+                  <ActionForm action={decideAction} className="flex flex-wrap gap-2">
+                    {hidden}
+                    <Button name="decision" value="allow" size="sm">Allow</Button>
+                    <Button name="decision" value="deny" size="sm" variant="destructive">Deny</Button>
+                    <Button name="decision" value="ask_sender" size="sm" variant="outline">Ask sender</Button>
+                    <Button name="decision" value="ask_owner" size="sm" variant="outline">Ask owner</Button>
+                  </ActionForm>
+                  <ActionForm action={decideAction} className="space-y-2">
+                    {hidden}
+                    <input type="hidden" name="decision" value="allow_with_limits" />
+                    <Label>Limits <span className="text-muted-foreground">(one per line)</span></Label>
+                    <Textarea
                       name="limits"
+                      rows={3}
                       defaultValue={"May open pull requests.\nMay not merge.\nMay not edit billing, auth, or data export code."}
                     />
-                  </label>
-                  <label>
-                    Reason <span className="hint">one per line</span>
-                    <textarea name="reason" defaultValue={"Marketing analytics request within policy."} />
-                  </label>
-                  <div className="btn-row">
-                    <button className="primary" type="submit">
-                      Allow with limits
-                    </button>
+                    <Label>Reason <span className="text-muted-foreground">(one per line)</span></Label>
+                    <Textarea name="reason" rows={2} defaultValue={"Marketing analytics request within policy."} />
+                    <Button type="submit" size="sm">Allow with limits</Button>
+                  </ActionForm>
+                </div>
+              )}
+
+              {r.status === "needs_info" && (
+                <ActionForm action={respondInfoAction} className="space-y-2">
+                  {hidden}
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Respond as sender
+                  </p>
+                  <Label>Answer the gate <span className="text-muted-foreground">(one per line)</span></Label>
+                  <Textarea name="answers" rows={2} defaultValue={"Scope is the header and pricing page CTAs only."} />
+                  <Button type="submit" size="sm" variant="outline">Send info (back to gate)</Button>
+                </ActionForm>
+              )}
+
+              {r.status === "blocked" && (
+                <ActionForm action={resolveCheckAction} className="space-y-2">
+                  {hidden}
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Execution check
+                  </p>
+                  <p className="text-sm text-muted-foreground">The worker flagged a risky step. Resolve it.</p>
+                  <Label>Reason <span className="text-muted-foreground">(one per line)</span></Label>
+                  <Textarea name="reason" rows={2} defaultValue={"Within the stated limits."} />
+                  <div className="flex gap-2">
+                    <Button name="decision" value="allow" size="sm">Allow action</Button>
+                    <Button name="decision" value="deny" size="sm" variant="destructive">Deny action</Button>
                   </div>
                 </ActionForm>
-              </>
-            )}
+              )}
 
-            {r.status === "needs_info" && (
-              <ActionForm action={respondInfoAction} style={{ marginTop: 12 }}>
-                <input type="hidden" name="request_id" value={r.id} />
-                <h3>Respond as sender</h3>
-                <label>
-                  Answer the gate <span className="hint">one per line</span>
-                  <textarea name="answers" defaultValue={"Scope is the header and pricing page CTAs only."} />
-                </label>
-                <div className="btn-row">
-                  <button type="submit">Send info (back to gate)</button>
-                </div>
-              </ActionForm>
-            )}
-
-            {r.status === "blocked" && (
-              <>
-                <h3>Execution check</h3>
-                <p className="muted">The worker flagged a risky step. Resolve it.</p>
-                <ActionForm action={resolveCheckAction}>
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <label>
-                    Reason <span className="hint">one per line</span>
-                    <textarea name="reason" defaultValue={"Within the stated limits."} />
-                  </label>
-                  <div className="btn-row">
-                    <button name="decision" value="allow" className="good">
-                      Allow action
-                    </button>
-                    <button name="decision" value="deny" className="danger">
-                      Deny action
-                    </button>
-                  </div>
+              {r.status === "accepted" && (
+                <ActionForm action={startSessionAction} className="space-y-2">
+                  {hidden}
+                  <p className="text-sm text-muted-foreground">Gate allowed work. Start a session for {r.to_id}.</p>
+                  <Button type="submit" size="sm">Create / start session</Button>
                 </ActionForm>
-              </>
-            )}
+              )}
 
-            {r.status === "accepted" && (
-              <ActionForm action={startSessionAction}>
-                <input type="hidden" name="request_id" value={r.id} />
-                <p className="muted">Gate allowed work. Start a session for {r.to_id}.</p>
-                <div className="btn-row">
-                  <button className="primary" type="submit">
-                    Create / start session
-                  </button>
-                </div>
-              </ActionForm>
-            )}
-
-            {r.status === "active" && (
-              <>
-                <h3>Session</h3>
-                <ActionForm action={postUpdateAction}>
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <label>
-                    Post session update
-                    <textarea name="summary" defaultValue="Wired the analytics event and added a test." />
-                  </label>
-                  <div className="checkbox-row">
-                    <input type="checkbox" id="requires_gate" name="requires_gate" />
-                    <label htmlFor="requires_gate" style={{ margin: 0 }}>
+              {r.status === "active" && (
+                <div className="space-y-4">
+                  <ActionForm action={postUpdateAction} className="space-y-2">
+                    {hidden}
+                    <Label>Post session update</Label>
+                    <Textarea name="summary" rows={2} defaultValue="Wired the analytics event and added a test." />
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" name="requires_gate" className="size-4 rounded border-input" />
                       Risky action — flag for gate
                     </label>
-                  </div>
-                  <div className="btn-row">
-                    <button type="submit">Post session update</button>
-                  </div>
-                </ActionForm>
+                    <Button type="submit" size="sm" variant="outline">Post update</Button>
+                  </ActionForm>
+                  <Separator />
+                  <ActionForm action={markReadyAction} className="space-y-2">
+                    {hidden}
+                    <Label>Mark ready for release <span className="text-muted-foreground">(note)</span></Label>
+                    <Textarea name="summary" rows={2} defaultValue="Implemented and tested. Ready for review." />
+                    <Button type="submit" size="sm">Mark ready for release</Button>
+                  </ActionForm>
+                </div>
+              )}
 
-                <ActionForm action={markReadyAction} style={{ marginTop: 12 }}>
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <label>
-                    Mark ready for release <span className="hint">optional note</span>
-                    <textarea name="summary" defaultValue="Implemented and tested. Ready for review." />
-                  </label>
-                  <div className="btn-row">
-                    <button className="primary" type="submit">
-                      Mark ready for release
-                    </button>
-                  </div>
-                </ActionForm>
-              </>
-            )}
+              {r.status === "ready_for_release" && (
+                <div className="space-y-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Release</p>
+                  <ActionForm action={releaseAction}>
+                    {hidden}
+                    <Button type="submit" size="sm">Release</Button>
+                  </ActionForm>
+                  <ActionForm action={rejectReleaseAction} className="space-y-2">
+                    {hidden}
+                    <Label>Reject release <span className="text-muted-foreground">(reason)</span></Label>
+                    <Textarea name="reason" rows={2} defaultValue="Needs documentation before release." />
+                    <Button type="submit" size="sm" variant="destructive">Reject release</Button>
+                  </ActionForm>
+                </div>
+              )}
 
-            {r.status === "ready_for_release" && (
-              <>
-                <h3>Release</h3>
-                <ActionForm action={releaseAction} className="btn-row">
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <button className="good" type="submit">
-                    Release
-                  </button>
-                </ActionForm>
-                <ActionForm action={rejectReleaseAction} style={{ marginTop: 12 }}>
-                  <input type="hidden" name="request_id" value={r.id} />
-                  <label>
-                    Reject release <span className="hint">reason</span>
-                    <textarea name="reason" defaultValue="Needs documentation before release." />
-                  </label>
-                  <div className="btn-row">
-                    <button className="danger" type="submit">
-                      Reject release
-                    </button>
-                  </div>
-                </ActionForm>
-              </>
-            )}
-
-            {r.status === "released" && (
-              <ActionForm action={closeAction}>
-                <input type="hidden" name="request_id" value={r.id} />
-                <h3>Close with receipt</h3>
-                <label>
-                  Status
-                  <select name="status" defaultValue="completed">
-                    <option value="completed">completed</option>
-                    <option value="failed">failed</option>
-                    <option value="cancelled">cancelled</option>
-                  </select>
-                </label>
-                <label>
-                  Artifacts <span className="hint">one per line</span>
-                  <textarea name="artifacts" defaultValue={"https://github.com/acme/web/pull/418"} />
-                </label>
-                <label>
-                  Evidence <span className="hint">required, one per line</span>
-                  <textarea name="evidence" defaultValue={"npm test -- analytics passed"} />
-                </label>
-                <label>
-                  Assumptions <span className="hint">one per line</span>
-                  <textarea
-                    name="assumptions"
-                    defaultValue={"Signup CTA means header and pricing page only."}
-                  />
-                </label>
-                <div className="btn-row">
-                  <button className="primary" type="submit">
+              {r.status === "released" && (
+                <ActionForm action={closeAction} className="space-y-2">
+                  {hidden}
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Close with receipt
-                  </button>
-                </div>
-              </ActionForm>
-            )}
+                  </p>
+                  <Label>Status</Label>
+                  <Select name="status" defaultValue="completed">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="completed">completed</SelectItem>
+                      <SelectItem value="failed">failed</SelectItem>
+                      <SelectItem value="cancelled">cancelled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Label>Artifacts <span className="text-muted-foreground">(one per line)</span></Label>
+                  <Textarea name="artifacts" rows={2} defaultValue={"https://github.com/acme/web/pull/418"} />
+                  <Label>Evidence <span className="text-muted-foreground">(required)</span></Label>
+                  <Textarea name="evidence" rows={2} defaultValue={"npm test -- analytics passed"} />
+                  <Label>Assumptions <span className="text-muted-foreground">(one per line)</span></Label>
+                  <Textarea name="assumptions" rows={2} defaultValue={"Signup CTA means header and pricing page only."} />
+                  <Button type="submit" size="sm">Close with receipt</Button>
+                </ActionForm>
+              )}
 
-            {(r.status === "closed" || r.status === "denied") && (
-              <p className="muted">This request is closed. No further actions.</p>
-            )}
-          </div>
+              {(r.status === "closed" || r.status === "denied") && (
+                <p className="text-sm text-muted-foreground">This request is closed. No further actions.</p>
+              )}
+            </CardContent>
+          </Card>
 
-          {/* Full event history */}
-          <div className="panel">
-            <h2>Event history</h2>
-            {events.map((e) => (
-              <div key={e.id} className="event">
-                <div>
-                  <span className="type">{e.type}</span>{" "}
-                  <span className="when">{e.created_at}</span>
-                </div>
-                <div className="mono muted">{e.actor}</div>
-                {e.summary && <div>{e.summary}</div>}
-              </div>
-            ))}
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Event history</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ol className="space-y-3">
+                {events.map((e) => (
+                  <li key={e.id} className="relative border-l-2 pl-4">
+                    <span className="absolute -left-[5px] top-1.5 size-2 rounded-full bg-primary" />
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-sm font-medium">{e.type}</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">{e.created_at.slice(11, 19)}</span>
+                    </div>
+                    <p className="font-mono text-xs text-muted-foreground">{e.actor}</p>
+                    {e.summary && <p className="text-sm text-muted-foreground">{e.summary}</p>}
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
         </div>
       </div>
-    </>
+    </div>
   );
 }

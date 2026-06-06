@@ -24,10 +24,12 @@ export function ActionForm({
   const [state, formAction, pending] = useActionState(action, {});
   return (
     <form action={formAction} className={className} style={style}>
-      <fieldset disabled={pending} style={{ border: 0, margin: 0, padding: 0, minInlineSize: 0 }}>
+      <fieldset disabled={pending} className="contents">
         {children}
       </fieldset>
-      {state?.error && <p className="error">{state.error}</p>}
+      {state?.error && (
+        <p className="mt-2 text-sm font-medium text-destructive">{state.error}</p>
+      )}
     </form>
   );
 }
