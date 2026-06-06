@@ -95,12 +95,14 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_at  TEXT NOT NULL
 );
 
--- Idempotency keys so agents can safely retry create calls.
+-- Idempotency keys so agents can safely retry create calls. Scoped per
+-- identity: the same key from two identities must not collide.
 CREATE TABLE IF NOT EXISTS idempotency_keys (
-  key         TEXT PRIMARY KEY,
   identity    TEXT NOT NULL,
+  key         TEXT NOT NULL,
   request_id  TEXT NOT NULL,
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (identity, key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_request ON events(request_id, created_at);
@@ -175,6 +177,24 @@ function migrate(db: DB): void {
   add("gate_decisions", "scope", "TEXT NOT NULL DEFAULT 'request'");
   add("gate_decisions", "action_id", "TEXT");
   add("session_actions", "gate_status", "TEXT");
+
+  // Earlier builds gave idempotency_keys a single-column PK (key), which let the
+  // same key from different identities collide. Recreate it with the composite
+  // PK if we find the old shape. It is a disposable cache, so dropping is safe.
+  const idemPk = (db.prepare(`PRAGMA table_info(idempotency_keys)`).all() as Array<{
+    name: string;
+    pk: number;
+  }>)
+    .filter((c) => c.pk > 0)
+    .map((c) => c.name);
+  if (idemPk.length > 0 && !(idemPk.includes("identity") && idemPk.includes("key"))) {
+    db.exec(`DROP TABLE idempotency_keys`);
+    db.exec(
+      `CREATE TABLE idempotency_keys (
+         identity TEXT NOT NULL, key TEXT NOT NULL, request_id TEXT NOT NULL,
+         created_at TEXT NOT NULL, PRIMARY KEY (identity, key))`,
+    );
+  }
 }
 
 export function seedIdentities(db: DB): void {

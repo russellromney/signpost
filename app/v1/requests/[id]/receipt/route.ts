@@ -1,6 +1,6 @@
-import { authed, body, json } from "@/lib/api";
+import { authed, body, json, loadParty } from "@/lib/api";
 import { assertCan } from "@/lib/authz";
-import { getRequest, getRequestDetail } from "@/lib/queries";
+import { getRequestDetail } from "@/lib/queries";
 import { closeWithReceipt } from "@/lib/service";
 import type { ReceiptStatus } from "@/lib/types";
 
@@ -8,8 +8,7 @@ import type { ReceiptStatus } from "@/lib/types";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return authed(req, async ({ db, caller }) => {
     const { id } = await params;
-    const r = getRequest(db, id);
-    if (!r) return json({ error: "not found" }, 404);
+    const r = loadParty(db, caller, id);
     assertCan(db, caller, "close", r);
 
     const b = await body<{
@@ -29,6 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       },
       caller,
     );
-    return json({ receipt, ...getRequestDetail(db, id) }, 201);
+    // receipt_id is distinct from the detail's `receipt` object below.
+    return json({ receipt_id: receipt, ...getRequestDetail(db, id) }, 201);
   });
 }

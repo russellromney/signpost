@@ -1,6 +1,6 @@
-import { authed, body, json } from "@/lib/api";
+import { authed, body, json, loadParty } from "@/lib/api";
 import { assertCan } from "@/lib/authz";
-import { getRequest, getRequestDetail } from "@/lib/queries";
+import { getRequestDetail } from "@/lib/queries";
 import { resolveCheck } from "@/lib/service";
 
 // Gate resolves a pending execution check (the execution-time gate).
@@ -8,8 +8,7 @@ import { resolveCheck } from "@/lib/service";
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return authed(req, async ({ db, caller }) => {
     const { id } = await params;
-    const r = getRequest(db, id);
-    if (!r) return json({ error: "not found" }, 404);
+    const r = loadParty(db, caller, id);
     assertCan(db, caller, "resolve_check", r);
 
     const b = await body<{ decision?: string; reason?: string[] }>(req);

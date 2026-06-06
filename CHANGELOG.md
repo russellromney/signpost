@@ -23,3 +23,17 @@
   - Idempotency-Key support on request creation.
   - Replaced the earlier unauthenticated /api demo routes.
   - Added v1 tests (auth, authz, protocol, event feed).
+- Hardening from an intensive self-review (all findings fixed):
+  - Idempotency keys are now scoped per identity (was a global key collision /
+    cross-identity request-id leak); migration upgrades existing databases.
+  - Malformed request bodies (e.g. missing goal) return 400, not 500.
+  - Action endpoints return 404 (not 403) to non-parties, so they never reveal
+    that a request exists.
+  - Service guard checks moved inside their transactions (removes a check/write
+    race); identity lookups cached per connection (removes feed/inbox N+1).
+  - Event feed filters visibility in SQL so a page returns up to `limit` visible
+    events; release now records a typed gate decision (scope=release).
+  - Default actor attribution derives from the request owner/gate, not a
+    hardcoded identity.
+  - Added HTTP-level tests that drive the real route handlers end to end
+    (auth, error mapping, idempotency, the full loop).

@@ -7,21 +7,37 @@ import type { Role, SignpostRequest } from "./types";
 
 export class AuthzError extends Error {}
 
+// Identities never change at runtime in the prototype (they're seeded once at
+// startup; there is no create-identity endpoint), so we load them once per DB
+// connection and cache the gate/owner lookup. This removes the N+1 queries that
+// gateOf/ownerOf would otherwise cause on every feed poll and inbox read.
+const identityCache = new WeakMap<object, Map<string, { gate: string | null; owner: string }>>();
+
+function identities(db: DB): Map<string, { gate: string | null; owner: string }> {
+  let m = identityCache.get(db);
+  if (!m) {
+    m = new Map();
+    const rows = db.prepare(`SELECT id, gate, owner FROM identities`).all() as Array<{
+      id: string;
+      gate: string | null;
+      owner: string;
+    }>;
+    for (const r of rows) m.set(r.id, { gate: r.gate, owner: r.owner });
+    identityCache.set(db, m);
+  }
+  return m;
+}
+
 // The gate identity that screens a request: the recipient's configured gate,
 // falling back to "<owner>/gate".
 export function gateOf(db: DB, req: SignpostRequest): string {
-  const row = db.prepare(`SELECT gate, owner FROM identities WHERE id = ?`).get(req.to_id) as
-    | { gate: string | null; owner: string }
-    | undefined;
+  const row = identities(db).get(req.to_id);
   if (row?.gate) return row.gate;
   return `${req.to_id.split("/")[0]}/gate`;
 }
 
 export function ownerOf(db: DB, req: SignpostRequest): string {
-  const row = db.prepare(`SELECT owner FROM identities WHERE id = ?`).get(req.to_id) as
-    | { owner: string }
-    | undefined;
-  return row?.owner ?? req.to_id.split("/")[0];
+  return identities(db).get(req.to_id)?.owner ?? req.to_id.split("/")[0];
 }
 
 // Every role the caller holds on this request. An identity can hold several

@@ -1,6 +1,6 @@
-import { authed, body, json } from "@/lib/api";
+import { authed, body, json, loadParty } from "@/lib/api";
 import { assertCan } from "@/lib/authz";
-import { getRequest, getRequestDetail } from "@/lib/queries";
+import { getRequestDetail } from "@/lib/queries";
 import { askGate, markReadyForRelease, postUpdate, ServiceError } from "@/lib/service";
 
 // Typed session actions from the worker:
@@ -10,8 +10,7 @@ import { askGate, markReadyForRelease, postUpdate, ServiceError } from "@/lib/se
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return authed(req, async ({ db, caller }) => {
     const { id } = await params;
-    const r = getRequest(db, id);
-    if (!r) return json({ error: "not found" }, 404);
+    const r = loadParty(db, caller, id);
     assertCan(db, caller, "session_action", r);
 
     const b = await body<{ action?: string; summary?: string }>(req);

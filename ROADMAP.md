@@ -110,6 +110,21 @@ console — can drive the whole loop.
   build clean, and the full loop driven over HTTP as four different identities
   with 401/403 enforcement.
 
+## Completed: Review Hardening
+
+An intensive self-review found ten issues; all are fixed and covered by tests:
+
+- Per-identity idempotency keys (+ migration), input validation → 400 (not 500),
+  404 (not 403) for non-parties, guard checks inside transactions, per-connection
+  identity cache (no N+1), SQL-side event-feed visibility, release recorded as a
+  typed gate decision, owner/gate-derived actor attribution, and a new
+  HTTP-level test suite driving the real route handlers end to end.
+
+Remaining known limits: better-sqlite3 transactions are DEFERRED, so the
+in-transaction guards are race-free for the single-process prototype but would
+need `BEGIN IMMEDIATE` for multi-process writers; the identity cache assumes
+identities don't change at runtime (true until a create-identity endpoint exists).
+
 ## Next Steps
 
 1. Inline error feedback in the UI (currently service errors throw; surface them

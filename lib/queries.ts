@@ -169,25 +169,34 @@ export interface EventFeed {
 
 // Cursor-based feed over the append-only log, scoped to what the caller can see.
 // This single primitive powers "check in" and "check messages" without a chat box.
+//
+// Visibility is filtered in SQL (request_id IN <visible>) so the LIMIT applies to
+// events the caller can actually see — a page returns up to `limit` visible
+// events rather than `limit` raw rows that might then be filtered down to a few.
 export function eventsSince(
   db: DB,
   caller: string,
   since = 0,
   opts: { request?: string; limit?: number } = {},
 ): EventFeed {
-  const visible = visibleRequestIds(db, caller);
   const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 500) : 100;
-  const rows = db
-    .prepare(`SELECT rowid AS seq, * FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?`)
-    .all(since, limit) as Row[];
 
-  const events: EventRecord[] = [];
-  for (const row of rows) {
-    const rid = row.request_id as string;
-    if (!visible.has(rid)) continue;
-    if (opts.request && rid !== opts.request) continue;
-    events.push({ ...mapEvent(row), seq: row.seq as number });
-  }
+  let visible = [...visibleRequestIds(db, caller)];
+  // A request filter narrows to that one request, but only if the caller is a
+  // party to it (otherwise the result is empty — no existence leak).
+  if (opts.request) visible = visible.filter((id) => id === opts.request);
+  if (visible.length === 0) return { events: [], cursor: since };
+
+  const placeholders = visible.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT rowid AS seq, * FROM events
+       WHERE rowid > ? AND request_id IN (${placeholders})
+       ORDER BY rowid LIMIT ?`,
+    )
+    .all(since, ...visible, limit) as Row[];
+
+  const events = rows.map((row) => ({ ...mapEvent(row), seq: row.seq as number }));
   const cursor = rows.length > 0 ? (rows[rows.length - 1].seq as number) : since;
   return { events, cursor };
 }
