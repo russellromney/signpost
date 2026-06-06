@@ -209,4 +209,26 @@ test("full loop over HTTP handlers ends closed with a receipt", async () => {
     "released",
     "closed",
   ]);
-})
+});
+
+test("events long-poll wakes when a new event is appended", async () => {
+  const base = await call(eventsR, { token: MAYA });
+  const cursor = base.data.cursor;
+  // Start a long-poll from the current cursor (nothing new yet).
+  const pending = call(eventsR, { token: MAYA, query: `?since=${cursor}&wait=3000` });
+  // Append events maya can see; this should wake the waiter.
+  await call(createReq, {
+    token: MAYA,
+    body: { to: "russell/coding", goal: "tracking via long-poll", definition_of_done: ["x"] },
+  });
+  const res = await pending;
+  assert.ok(res.data.events.length > 0, "long-poll should return the new events");
+  assert.ok(res.data.cursor > cursor);
+});
+
+test("events long-poll returns empty at timeout when nothing happens", async () => {
+  const t0 = Date.now();
+  const res = await call(eventsR, { token: MAYA, query: `?since=999999&wait=300` });
+  assert.equal(res.data.events.length, 0);
+  assert.ok(Date.now() - t0 >= 250, "should have waited roughly the timeout");
+});

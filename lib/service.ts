@@ -6,6 +6,7 @@
 // transaction body never yields, check-and-write is atomic — no time-of-check /
 // time-of-use race between a status read and the state change it gates.
 import { gateOf, ownerOf } from "./authz";
+import { emitEvent } from "./bus";
 import type { DB } from "./db";
 import {
   newActionId,
@@ -38,6 +39,8 @@ function logEvent(
     `INSERT INTO events (id, request_id, type, actor, summary, data, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(newEventId(), requestId, type, actor, summary, JSON.stringify(data), now());
+  // Wake any long-poll waiters. Safe to call inside the transaction.
+  emitEvent();
 }
 
 function require_(db: DB, id: string): SignpostRequest {
