@@ -26,11 +26,18 @@ function freshDb() {
   return { db, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("seeds the four required identities", () => {
+test("seeds the principals, workers, and admin", () => {
   const { db, cleanup } = freshDb();
   try {
     const ids = listIdentities(db).map((i) => i.id).sort();
-    assert.deepEqual(ids, ["maya/marketing", "russell", "russell/coding", "russell/gate"]);
+    assert.deepEqual(ids, [
+      "maya",
+      "maya/marketing",
+      "root",
+      "russell",
+      "russell/coding",
+      "russell/gate",
+    ]);
   } finally {
     cleanup();
   }

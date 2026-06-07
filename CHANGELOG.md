@@ -47,6 +47,18 @@
   - Long-poll on /v1/events?wait=ms (in-process notifier; no busy-polling).
   - MCP server (npm run mcp): 19 tools over lib/ops with identical authorization.
   - Tests now cover policy, MCP, owner inbox, and long-poll (37 total).
+- Added first-class identity, owner, and key management over the API + MCP
+  (the system is no longer a frozen, hand-seeded identity set):
+  - Identity CRUD: `POST /v1/identities`, `GET/PATCH/DELETE /v1/identities/:id`
+    (soft-disable; disabled identities can't authenticate or be addressed).
+  - Owner is a real edge; owner-tree authorization (you manage what you own;
+    only an admin mints a new top-level principal). Seeded `root`/`russell`/`maya`.
+  - API keys: random secret shown once, stored hashed, many per identity,
+    revocable/expiring — `POST/GET/DELETE /v1/identities/:id/keys[/:keyId]`.
+    Authentication now resolves the hash and honors revoke/expiry/disabled.
+  - Fixed the authz identity cache to invalidate on identity writes; management
+    actions logged to an append-only `admin_events` table.
+  - 9 new tests (54 total); build + lint green; verified over HTTP.
 - Made the `route` and `counter` gate decisions real (they previously parked the
   request at `needs_owner` and did nothing):
   - `route` re-addresses a request to another identity and re-screens it under

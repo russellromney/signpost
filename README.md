@@ -262,15 +262,18 @@ POST /requests/:id/release
 
 ## Running the Local Prototype
 
-The repository now includes the first working prototype: a local-only Next.js app
+The repository includes a working local implementation: a local-only Next.js app
 backed by SQLite that exercises the whole loop:
 
 ```text
 request -> gate -> session -> release -> receipt
 ```
 
-It is local-only by design. There is no chat, no auth, and no GitHub, Slack,
-email, or agent integration. One request type only.
+It is local-only by design (no outbound HTTP, so no webhooks/Slack/email), and
+there is one request type. But it is **not** a toy: it has an authenticated `/v1`
+API and MCP server for agents, a self-deciding gate policy engine, and
+first-class identity/owner/key management — all over one shared, authorized core.
+The web UI is just the owner's exception console on top of it.
 
 ### Stack
 
@@ -331,11 +334,18 @@ service layer, so they can never drift.
 
 ### Authentication
 
-Every call is made *as* an identity, proven by a bearer token. The prototype
-seeds one deterministic token per identity (`sk_<identity-with-_>`):
+Every call is made *as* an identity, proven by a bearer token. Keys are stored
+only as a hash (`api_keys`); authentication hashes the presented secret and looks
+it up, skipping revoked/expired keys and disabled identities. An identity can
+have many keys, issued and revoked at runtime (see *Identity & key management*).
+
+For convenience the seed ships one **deterministic** key per identity
+(`sk_<identity-with-_>`), so the demo is curl-able out of the box:
 
 ```text
+root             sk_root            (instance admin)
 russell          sk_russell
+maya             sk_maya
 russell/gate     sk_russell_gate
 russell/coding   sk_russell_coding
 maya/marketing   sk_maya_marketing
@@ -345,8 +355,8 @@ maya/marketing   sk_maya_marketing
 curl localhost:3000/v1/me -H "Authorization: Bearer sk_maya_marketing"
 ```
 
-A real deployment would issue rotating secrets; the boundary — "every call is
-made as an identity" — is what's real here.
+Freshly issued keys are random and high-entropy; the deterministic seeds exist
+only so the shipped identities are easy to drive locally.
 
 ### Authorization
 
@@ -366,7 +376,14 @@ Wrong role → `403`. Bad/absent token → `401`. Illegal state transition → `
 
 ```http
 GET  /v1/me                              # who am I
-GET  /v1/identities
+GET  /v1/identities                      # list identities
+POST /v1/identities                      # create an identity (returns an initial key)
+GET  /v1/identities/:id                  # read one identity
+PATCH  /v1/identities/:id                # update display_name / description / gate (owner/admin)
+DELETE /v1/identities/:id                # soft-disable (owner/admin)
+GET    /v1/identities/:id/keys           # list key metadata (owner/admin)
+POST   /v1/identities/:id/keys           # issue a key, secret shown once (owner/admin)
+DELETE /v1/identities/:id/keys/:keyId    # revoke a key (owner/admin)
 GET  /v1/inbox                           # my actionable work, bucketed by role
 GET  /v1/events?since=N&request=ID&wait=MS   # cursor feed; wait=ms long-polls
 
@@ -404,6 +421,33 @@ refusing it:
   `countered`. `route` and `counter` are human decisions — a static policy can't
   supply a per-request target or terms, so the policy engine never makes them.
 
+### Identity & key management
+
+Identities, owners, and keys are first-class and managed over the API/MCP — the
+system is no longer a fixed set of seeded identities. The model:
+
+- **Owner is a real edge.** Every identity has an `owner` that points at another
+  identity; a self-owned identity (`owner === id`) is a *principal* (a root of its
+  own tree). `russell` owns `russell/gate` and `russell/coding`; `maya` owns
+  `maya/marketing`.
+- **Owner-tree authorization.** You may create and manage any identity you own
+  (directly or transitively): update it, disable it, and mint/revoke its keys.
+  Creating a **new top-level principal** requires an **admin** (the seeded `root`
+  identity). So an agent can spin up its own sub-workers, but not new tenants.
+- **Keys.** Random secret, returned exactly once, stored only as a hash; many per
+  identity, each with a label and optional expiry, revocable at any time. This is
+  also where an owner's third power — *revoke access* — lives.
+- **Soft delete.** Identities are disabled, never removed (the audit graph stays
+  intact). A disabled identity can't authenticate or be addressed. Management
+  actions are recorded in an append-only `admin_events` log.
+
+```bash
+# russell mints a sub-worker and gets its first key (secret shown once)
+curl -X POST localhost:3000/v1/identities -H "Authorization: Bearer sk_russell" \
+  -H 'content-type: application/json' \
+  -d '{"id":"russell/data","kind":"worker","owner":"russell"}'
+```
+
 ### The gate runs itself (policy)
 
 The gate is the product, so it doesn't wait for a human by default. On arrival a
@@ -426,7 +470,8 @@ The same authorized layer is exposed as MCP tools, so a Claude/LLM agent can use
 Signpost as native tools (`whoami`, `inbox`, `events`, `create_request`,
 `decide` (incl. `route`/`counter`), `respond_info`, `respond_counter`,
 `start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
-`close`, `get_policy`, `set_policy`, …). It authenticates via `SIGNPOST_TOKEN`
+`close`, `get_policy`, `set_policy`, `create_identity`, `update_identity`,
+`disable_identity`, `list_keys`, `issue_key`, `revoke_key`, …). It authenticates via `SIGNPOST_TOKEN`
 and shares the same local database — identical rules to the REST API.
 
 ```bash
@@ -509,8 +554,10 @@ scripts/seed.ts          create + seed the local database
 
 ## Status
 
-A working local prototype of the whole loop with a self-deciding gate: an
-authenticated `/v1` REST API, an MCP server, a policy engine that auto-decides
-and escalates only exceptions, long-poll on the event feed, an owner console, and
-inline UI errors. Next steps are tracked in `ROADMAP.md` (execution/release-time
-policy, networked webhooks, rotating tokens, pagination).
+A working local implementation of the whole loop with a self-deciding gate and a
+real management layer: an authenticated `/v1` REST API, an MCP server, a policy
+engine that auto-decides and escalates only exceptions, first-class
+identity/owner/key management (owner-tree authz, hashed revocable keys,
+soft-disable), long-poll on the event feed, an owner console, and inline UI
+errors. Next steps are tracked in `ROADMAP.md` (execution/release-time policy,
+a management UI, networked webhooks, pagination).

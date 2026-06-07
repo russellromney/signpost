@@ -13,5 +13,11 @@ export const newSessionId = () => `sess_${token()}`;
 export const newActionId = () => `act_${token()}`;
 export const newReceiptId = () => `rec_${token()}`;
 export const newEventId = () => `evt_${token()}`;
+export const newKeyId = () => `key_${token()}`;
+export const newAdminEventId = () => `aev_${token()}`;
+
+// A bearer secret for a freshly issued API key. High-entropy and random (unlike
+// the deterministic seed tokens), shown to the caller exactly once.
+export const newSecret = () => `sk_${randomBytes(24).toString("base64url")}`;
 
 export const now = () => new Date().toISOString();

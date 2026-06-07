@@ -2,6 +2,7 @@
 import type { DB } from "./db";
 import { rolesOf } from "./authz";
 import type {
+  ApiKey,
   EventRecord,
   GateDecision,
   Identity,
@@ -41,8 +42,39 @@ function mapIdentity(r: Row): Identity {
     display_name: (r.display_name as string) ?? null,
     description: (r.description as string) ?? null,
     gate: (r.gate as string) ?? null,
+    status: (r.status as Identity["status"]) ?? "active",
+    is_admin: Boolean(r.is_admin),
     created_at: r.created_at as string,
   };
+}
+
+function mapApiKey(r: Row): ApiKey {
+  return {
+    id: r.id as string,
+    identity: r.identity as string,
+    label: (r.label as string) ?? null,
+    prefix: r.prefix as string,
+    created_at: r.created_at as string,
+    expires_at: (r.expires_at as string) ?? null,
+    revoked_at: (r.revoked_at as string) ?? null,
+  };
+}
+
+// Key metadata for an identity (never the secret or its hash).
+export function listKeys(db: DB, identity: string): ApiKey[] {
+  return (
+    db
+      .prepare(`SELECT * FROM api_keys WHERE identity = ? ORDER BY created_at`)
+      .all(identity) as Row[]
+  ).map(mapApiKey);
+}
+
+// The identity a key belongs to, for management authorization. null if unknown.
+export function keyIdentity(db: DB, keyId: string): string | null {
+  const r = db.prepare(`SELECT identity FROM api_keys WHERE id = ?`).get(keyId) as
+    | { identity: string }
+    | undefined;
+  return r?.identity ?? null;
 }
 
 function mapDecision(r: Row): GateDecision {

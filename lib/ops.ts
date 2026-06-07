@@ -4,7 +4,7 @@
 // MCP server both call these, so they can never enforce different rules.
 //
 // Deliberately free of any `next` import so it runs in a plain Node (MCP) context.
-import { assertCan, AuthzError, rolesOf } from "./authz";
+import { assertCan, AuthzError, canManage, isAdmin, rolesOf } from "./authz";
 import type { DB } from "./db";
 import { autoScreen, getPolicy, setPolicy } from "./policy";
 import {
@@ -13,7 +13,9 @@ import {
   getRequestDetail,
   identityById,
   inboxFor,
+  keyIdentity,
   listIdentities,
+  listKeys,
   listRequestsFiltered,
   type EventFeed,
   type RequestDetail,
@@ -21,8 +23,11 @@ import {
 import {
   askGate,
   closeWithReceipt,
+  createIdentity,
   createRequestIdempotent,
   decide,
+  disableIdentity,
+  issueKey,
   markReadyForRelease,
   postUpdate,
   rejectRelease,
@@ -30,13 +35,18 @@ import {
   resolveCheck,
   respondToCounter,
   respondToInfo,
+  revokeKey,
   startSession,
+  updateIdentity,
   ServiceError,
+  type CreateIdentityInput,
   type CreateRequestInput,
   type DecideInput,
+  type IssuedKey,
   type ReceiptInput,
+  type UpdateIdentityInput,
 } from "./service";
-import type { GatePolicy, Identity, RequestStatus, Role, SignpostRequest } from "./types";
+import type { ApiKey, GatePolicy, Identity, RequestStatus, Role, SignpostRequest } from "./types";
 
 // Thrown when a request does not exist OR the caller is not party to it. Both map
 // to 404 so endpoints never reveal the existence of requests you can't see.
@@ -61,6 +71,81 @@ export function opWhoami(db: DB, caller: string): Identity | null {
 
 export function opIdentities(db: DB): Identity[] {
   return listIdentities(db);
+}
+
+export function opGetIdentity(db: DB, _caller: string, id: string): Identity {
+  const ident = identityById(db, id);
+  if (!ident) throw new NotFoundError("not found");
+  return ident;
+}
+
+// --- identity / owner / key management ---------------------------------------
+//
+// Authorization is the ownership tree: you manage identities you own (or own
+// transitively); an admin manages anything; only an admin mints a new top-level
+// principal (a self-owned identity).
+
+export function opCreateIdentity(
+  db: DB,
+  caller: string,
+  input: CreateIdentityInput,
+): IssuedKey {
+  const owner = input.owner?.trim() || input.id;
+  const selfOwned = owner === input.id;
+  if (selfOwned) {
+    if (!isAdmin(db, caller)) {
+      throw new AuthzError(`${caller} may not create a top-level principal (admin only)`);
+    }
+  } else if (!(owner === caller || canManage(db, caller, owner))) {
+    throw new AuthzError(`${caller} may not create an identity owned by ${owner}`);
+  }
+  return createIdentity(db, input, caller);
+}
+
+export function opUpdateIdentity(
+  db: DB,
+  caller: string,
+  id: string,
+  patch: UpdateIdentityInput,
+): Identity {
+  if (!identityById(db, id)) throw new NotFoundError("not found");
+  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage ${id}`);
+  updateIdentity(db, id, patch, caller);
+  return identityById(db, id)!;
+}
+
+export function opDisableIdentity(db: DB, caller: string, id: string): Identity {
+  if (!identityById(db, id)) throw new NotFoundError("not found");
+  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage ${id}`);
+  disableIdentity(db, id, caller);
+  return identityById(db, id)!;
+}
+
+export function opListKeys(db: DB, caller: string, id: string): ApiKey[] {
+  if (!identityById(db, id)) throw new NotFoundError("not found");
+  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage keys for ${id}`);
+  return listKeys(db, id);
+}
+
+export function opIssueKey(
+  db: DB,
+  caller: string,
+  id: string,
+  opts: { label?: string | null; expires_at?: string | null } = {},
+): IssuedKey {
+  if (!identityById(db, id)) throw new NotFoundError("not found");
+  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not issue keys for ${id}`);
+  return issueKey(db, id, { ...opts, actor: caller });
+}
+
+export function opRevokeKey(db: DB, caller: string, keyId: string): { revoked: string } {
+  const identity = keyIdentity(db, keyId);
+  if (!identity) throw new NotFoundError("not found");
+  if (!canManage(db, caller, identity)) {
+    throw new AuthzError(`${caller} may not revoke keys for ${identity}`);
+  }
+  revokeKey(db, keyId, caller);
+  return { revoked: keyId };
 }
 
 export function opInbox(db: DB, caller: string) {

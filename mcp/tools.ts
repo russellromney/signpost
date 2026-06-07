@@ -9,6 +9,7 @@ import * as ops from "../lib/ops";
 import type {
   GateDecisionKind,
   GatePolicy,
+  IdentityKind,
   ReceiptStatus,
   RequestStatus,
   Role,
@@ -43,6 +44,72 @@ export const TOOLS: ToolDef[] = [
     description: "List all identities in the system.",
     inputSchema: {},
     run: ({ db }) => ops.opIdentities(db),
+  },
+  {
+    name: "create_identity",
+    description:
+      "Create an identity. You may create one owned by you (or an identity you own); a new top-level principal (self-owned) needs admin. Returns an initial API key whose secret is shown once.",
+    inputSchema: {
+      id: z.string(),
+      kind: z.string().optional(),
+      owner: z.string().optional(),
+      gate: z.string().optional(),
+      display_name: z.string().optional(),
+      description: z.string().optional(),
+    },
+    run: ({ db, caller }, a) =>
+      ops.opCreateIdentity(db, caller, {
+        id: s(a.id),
+        kind: a.kind ? (s(a.kind) as IdentityKind) : undefined,
+        owner: a.owner ? s(a.owner) : undefined,
+        gate: a.gate ? s(a.gate) : undefined,
+        display_name: a.display_name ? s(a.display_name) : undefined,
+        description: a.description ? s(a.description) : undefined,
+      }),
+  },
+  {
+    name: "update_identity",
+    description: "Update an identity's display_name / description / gate (owner or admin).",
+    inputSchema: {
+      id: z.string(),
+      display_name: z.string().optional(),
+      description: z.string().optional(),
+      gate: z.string().optional(),
+    },
+    run: ({ db, caller }, a) =>
+      ops.opUpdateIdentity(db, caller, s(a.id), {
+        display_name: a.display_name !== undefined ? s(a.display_name) : undefined,
+        description: a.description !== undefined ? s(a.description) : undefined,
+        gate: a.gate !== undefined ? s(a.gate) : undefined,
+      }),
+  },
+  {
+    name: "disable_identity",
+    description: "Soft-disable an identity so it can no longer authenticate or be addressed (owner or admin).",
+    inputSchema: { id: z.string() },
+    run: ({ db, caller }, a) => ops.opDisableIdentity(db, caller, s(a.id)),
+  },
+  {
+    name: "list_keys",
+    description: "List an identity's API keys (metadata only, never the secret). Owner or admin.",
+    inputSchema: { id: z.string() },
+    run: ({ db, caller }, a) => ops.opListKeys(db, caller, s(a.id)),
+  },
+  {
+    name: "issue_key",
+    description: "Issue a new API key for an identity (owner or admin). The secret is returned exactly once.",
+    inputSchema: { id: z.string(), label: z.string().optional(), expires_at: z.string().optional() },
+    run: ({ db, caller }, a) =>
+      ops.opIssueKey(db, caller, s(a.id), {
+        label: a.label ? s(a.label) : undefined,
+        expires_at: a.expires_at ? s(a.expires_at) : undefined,
+      }),
+  },
+  {
+    name: "revoke_key",
+    description: "Revoke an API key by its id (owner of the key's identity, or admin).",
+    inputSchema: { key_id: z.string() },
+    run: ({ db, caller }, a) => ops.opRevokeKey(db, caller, s(a.key_id)),
   },
   {
     name: "inbox",

@@ -12,6 +12,10 @@ export type IdentityKind =
   | "service"
   | "gate";
 
+// active identities can authenticate and be addressed; disabled ones can do
+// neither (soft delete — rows are never removed, per the append-only ethos).
+export type IdentityStatus = "active" | "disabled";
+
 export interface Identity {
   id: string;
   kind: IdentityKind;
@@ -19,7 +23,21 @@ export interface Identity {
   display_name: string | null;
   description: string | null;
   gate: string | null;
+  status: IdentityStatus;
+  is_admin: boolean; // may create top-level principals and manage any identity
   created_at: string;
+}
+
+// API key metadata. The secret itself is never stored or returned after issue —
+// only its hash lives in the database; `prefix` is a non-secret display hint.
+export interface ApiKey {
+  id: string;
+  identity: string;
+  label: string | null;
+  prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
 }
 
 // The lifecycle states a request moves through. Kept deliberately small.

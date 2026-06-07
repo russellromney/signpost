@@ -156,21 +156,37 @@ now real (they previously parked the request at `needs_owner` and did nothing):
 - 8 new tests (route re-address + re-screen, counter accept/decline, validation,
   authorization, policy rejection); 45 total, build + lint green.
 
+## Completed: Identity, Owner & Key Management
+
+Identities are no longer a frozen, hand-seeded set — creation and management are
+first-class over the API and MCP, built on the shared `lib/ops` authorization.
+
+- **Identity CRUD**: `POST /v1/identities` (create), `GET/PATCH/DELETE
+  /v1/identities/:id` (read / update / soft-disable). Disabled identities can't
+  authenticate or be addressed; rows are never deleted.
+- **Owner is a real edge** (FK-like): every identity has an owner; a self-owned
+  identity is a principal. Seeded `root` (admin), `russell`, and `maya`.
+- **Owner-tree authz** (`controls`/`canManage`): you manage identities you own
+  transitively; only an admin mints a new top-level principal.
+- **Keys**: `api_keys` table — random secret shown once, stored hashed, many per
+  identity, labelled, optionally expiring, revocable. `POST/GET/DELETE
+  /v1/identities/:id/keys[/:keyId]`. Auth now resolves the hash and honors
+  revoke/expiry/disabled. Deterministic `sk_*` seeds preserved for the demo.
+- **Authz cache fixed**: the per-connection identity cache is invalidated on
+  every identity write (it previously assumed identities never change).
+- **Audit**: management actions logged to an append-only `admin_events` table.
+- 9 new tests (owner-tree authz, key lifecycle, soft-disable, cache
+  invalidation); 54 total, build + lint green, verified over HTTP.
+
 ## Next Steps
 
-1. Execution-time and release-time policy (auto-resolve some `ask_gate` checks /
-   release checks via trigger rules) — request-time is done.
-2. Networked webhooks on the event feed (a hosted, non-local mode).
-3. Pagination/cursors on `/v1/requests`; rotating (non-deterministic) tokens.
-4. `BEGIN IMMEDIATE` for multi-process write safety (single-process is race-free).
-5. A create-identity endpoint (then invalidate the authz identity cache).
-6. Inline error feedback polish and a policy editor in the owner UI.
-2. Persisted, editable gate policies per identity (the `examples/gate-policy.yml`
-   shape) so the gate can auto-decide and only escalate exceptions to humans.
-3. Long-poll or webhooks on `/v1/events` so agents don't busy-poll.
-4. Pagination/cursors on `/v1/requests`; rotating (non-deterministic) tokens.
-5. Owner inbox views (Approvals, Escalations, Exceptions, Audit) and counter/route
-   decisions in the UI.
-6. Optional: an MCP server over the same service layer for LLM-native agents.
-7. Only after receipts accumulate: consider reputation and policy learning
-   (still out of scope for now).
+1. **Management UI** in the owner console: create/disable identities, edit gate
+   policy, and issue/revoke keys (the API is done; the console can't do these yet).
+2. Execution-time and release-time policy (auto-resolve some `ask_gate` / release
+   checks via trigger rules) — request-time is done.
+3. Pagination/cursors on `/v1/requests` and on the `admin_events` audit;
+   surface the management audit via an endpoint.
+4. Networked mode: webhooks on the event feed and `BEGIN IMMEDIATE` for
+   multi-process write safety (single-process is race-free today).
+5. Only after receipts accumulate: reputation and policy learning (still out of
+   scope for now).

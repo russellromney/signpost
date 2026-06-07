@@ -5,21 +5,25 @@
 // writes and the event-log append. Because better-sqlite3 is synchronous and the
 // transaction body never yields, check-and-write is atomic — no time-of-check /
 // time-of-use race between a status read and the state change it gates.
-import { gateOf, ownerOf } from "./authz";
+import { gateOf, invalidateIdentities, ownerOf } from "./authz";
 import { emitEvent } from "./bus";
-import type { DB } from "./db";
+import { hashSecret, type DB } from "./db";
 import {
   newActionId,
+  newAdminEventId,
   newDecisionId,
   newEventId,
+  newKeyId,
   newReceiptId,
   newRequestId,
+  newSecret,
   newSessionId,
   now,
 } from "./ids";
 import { getRequest } from "./queries";
 import type {
   GateDecisionKind,
+  IdentityKind,
   ReceiptStatus,
   RequestStatus,
   SignpostRequest,
@@ -83,6 +87,189 @@ function stringList(value: unknown): string[] {
   return value.filter((s): s is string => typeof s === "string" && s.trim() !== "");
 }
 
+// Append-only audit for management actions (identity/owner/key lifecycle). The
+// request feed lives in `events`; these have no request, so they live here.
+function logAdmin(
+  db: DB,
+  type: string,
+  actor: string,
+  target: string | null,
+  summary: string,
+  data: Record<string, unknown> = {},
+): void {
+  db.prepare(
+    `INSERT INTO admin_events (id, type, actor, target, summary, data, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(newAdminEventId(), type, actor, target, summary, JSON.stringify(data), now());
+}
+
+// --- 0. identities, owners, and keys ----------------------------------------
+
+const IDENTITY_KINDS: IdentityKind[] = ["human", "worker", "org", "team", "service", "gate"];
+// Lowercase segments separated by single slashes, e.g. "acme/legal" or "russell".
+const IDENTITY_ID = /^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:\/[a-z0-9]+(?:[-_][a-z0-9]+)*)*$/;
+
+export interface CreateIdentityInput {
+  id: string;
+  kind?: IdentityKind;
+  owner?: string; // defaults to the id itself (a self-owned principal)
+  gate?: string | null;
+  display_name?: string | null;
+  description?: string | null;
+}
+
+export interface IssuedKey {
+  id: string;
+  identity: string;
+  secret: string; // shown once, never stored
+  prefix: string;
+  label: string | null;
+  created_at: string;
+  expires_at: string | null;
+}
+
+// Mint a key for an identity. The plaintext secret is returned exactly once;
+// only its hash is persisted.
+export function issueKey(
+  db: DB,
+  identity: string,
+  opts: { label?: string | null; expires_at?: string | null; actor?: string } = {},
+): IssuedKey {
+  const secret = newSecret();
+  const id = newKeyId();
+  const ts = now();
+  const label = opts.label?.trim() || null;
+  const expires_at = opts.expires_at ?? null;
+  const tx = db.transaction(() => {
+    const ident = db.prepare(`SELECT status FROM identities WHERE id = ?`).get(identity) as
+      | { status: string }
+      | undefined;
+    if (!ident) throw new ServiceError(`Unknown identity ${identity}`);
+    if (ident.status === "disabled") throw new ServiceError(`Identity ${identity} is disabled`);
+    db.prepare(
+      `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, identity, hashSecret(secret), label, secret.slice(0, 12), ts, expires_at);
+    logAdmin(db, "key_issued", opts.actor ?? identity, identity, `Issued key ${id}.`, { key: id });
+  });
+  tx();
+  return { id, identity, secret, prefix: secret.slice(0, 12), label, created_at: ts, expires_at };
+}
+
+export function createIdentity(db: DB, input: CreateIdentityInput, actor?: string): IssuedKey {
+  const id = requireString(input.id, "id");
+  if (!IDENTITY_ID.test(id)) {
+    throw new ServiceError(`invalid identity id "${id}" (use lowercase letters, digits, - _ and /)`);
+  }
+  const kind = input.kind ?? "worker";
+  if (!IDENTITY_KINDS.includes(kind)) throw new ServiceError(`invalid identity kind "${kind}"`);
+  const owner = input.owner?.trim() || id; // default: self-owned principal
+  const gate = typeof input.gate === "string" && input.gate.trim() ? input.gate.trim() : null;
+
+  const ts = now();
+  const tx = db.transaction(() => {
+    if (db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(id)) {
+      throw new ServiceError(`identity ${id} already exists`);
+    }
+    // The owner must already exist (unless this is a self-owned principal), so
+    // the ownership tree is always well-formed.
+    if (owner !== id && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(owner)) {
+      throw new ServiceError(`unknown owner ${owner}`);
+    }
+    if (gate && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(gate)) {
+      throw new ServiceError(`unknown gate ${gate}`);
+    }
+    db.prepare(
+      `INSERT INTO identities (id, kind, owner, display_name, description, gate, status, is_admin, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?)`,
+    ).run(id, kind, owner, input.display_name ?? null, input.description ?? null, gate, ts);
+    invalidateIdentities(db);
+    logAdmin(db, "identity_created", actor ?? owner, id, `Created identity ${id} (owner ${owner}).`, {
+      kind,
+      owner,
+      gate,
+    });
+  });
+  tx();
+  // Hand back an initial key so the new identity can immediately authenticate.
+  return issueKey(db, id, { label: "initial", actor });
+}
+
+export interface UpdateIdentityInput {
+  display_name?: string | null;
+  description?: string | null;
+  gate?: string | null;
+}
+
+export function updateIdentity(
+  db: DB,
+  id: string,
+  patch: UpdateIdentityInput,
+  actor?: string,
+): void {
+  const tx = db.transaction(() => {
+    const row = db.prepare(`SELECT id FROM identities WHERE id = ?`).get(id) as
+      | { id: string }
+      | undefined;
+    if (!row) throw new ServiceError(`Unknown identity ${id}`);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (patch.display_name !== undefined) {
+      sets.push("display_name = ?");
+      vals.push(patch.display_name);
+    }
+    if (patch.description !== undefined) {
+      sets.push("description = ?");
+      vals.push(patch.description);
+    }
+    if (patch.gate !== undefined) {
+      const gate = patch.gate && patch.gate.trim() ? patch.gate.trim() : null;
+      if (gate && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(gate)) {
+        throw new ServiceError(`unknown gate ${gate}`);
+      }
+      sets.push("gate = ?");
+      vals.push(gate);
+    }
+    if (sets.length === 0) throw new ServiceError("nothing to update");
+    db.prepare(`UPDATE identities SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
+    invalidateIdentities(db);
+    logAdmin(db, "identity_updated", actor ?? id, id, `Updated identity ${id}.`, { fields: sets });
+  });
+  tx();
+}
+
+// Soft delete: the row stays (audit history is immutable) but the identity can
+// no longer authenticate or be addressed.
+export function disableIdentity(db: DB, id: string, actor?: string): void {
+  const tx = db.transaction(() => {
+    const row = db.prepare(`SELECT status, is_admin FROM identities WHERE id = ?`).get(id) as
+      | { status: string; is_admin: number }
+      | undefined;
+    if (!row) throw new ServiceError(`Unknown identity ${id}`);
+    if (row.is_admin) throw new ServiceError(`Cannot disable an admin identity`);
+    if (row.status === "disabled") return; // idempotent
+    db.prepare(`UPDATE identities SET status = 'disabled' WHERE id = ?`).run(id);
+    invalidateIdentities(db);
+    logAdmin(db, "identity_disabled", actor ?? id, id, `Disabled identity ${id}.`);
+  });
+  tx();
+}
+
+export function revokeKey(db: DB, keyId: string, actor?: string): void {
+  const tx = db.transaction(() => {
+    const row = db.prepare(`SELECT identity, revoked_at FROM api_keys WHERE id = ?`).get(keyId) as
+      | { identity: string; revoked_at: string | null }
+      | undefined;
+    if (!row) throw new ServiceError(`Unknown key ${keyId}`);
+    if (row.revoked_at) return; // idempotent
+    db.prepare(`UPDATE api_keys SET revoked_at = ? WHERE id = ?`).run(now(), keyId);
+    logAdmin(db, "key_revoked", actor ?? row.identity, row.identity, `Revoked key ${keyId}.`, {
+      key: keyId,
+    });
+  });
+  tx();
+}
+
 // --- 1. create request -------------------------------------------------------
 
 export interface CreateRequestInput {
@@ -102,10 +289,11 @@ export function createRequest(db: DB, input: CreateRequestInput): string {
   const dod = stringList(input.definition_of_done);
   if (dod.length === 0) throw new ServiceError("at least one definition of done is required");
 
-  const recipient = db.prepare(`SELECT gate FROM identities WHERE id = ?`).get(to) as
-    | { gate: string | null }
+  const recipient = db.prepare(`SELECT gate, status FROM identities WHERE id = ?`).get(to) as
+    | { gate: string | null; status: string }
     | undefined;
   if (!recipient) throw new ServiceError(`Unknown recipient identity ${to}`);
+  if (recipient.status === "disabled") throw new ServiceError(`Recipient identity ${to} is disabled`);
 
   const id = newRequestId();
   const ts = now();

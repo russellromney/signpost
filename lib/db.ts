@@ -3,9 +3,10 @@
 // We use better-sqlite3 (synchronous, embedded). The database file lives under
 // /data by default, or wherever SIGNPOST_DB points (tests use a temp file).
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { now } from "./ids";
+import { newKeyId, now } from "./ids";
 
 export type DB = Database.Database;
 
@@ -17,6 +18,8 @@ CREATE TABLE IF NOT EXISTS identities (
   display_name  TEXT,
   description   TEXT,
   gate          TEXT,
+  status        TEXT NOT NULL DEFAULT 'active',
+  is_admin      INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL
 );
 
@@ -100,9 +103,35 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 -- One bearer token per identity. Authenticates API callers as an identity.
+-- (Legacy: superseded by api_keys, kept so old databases keep their rows.)
 CREATE TABLE IF NOT EXISTS tokens (
   token       TEXT PRIMARY KEY,
   identity    TEXT NOT NULL REFERENCES identities(id),
+  created_at  TEXT NOT NULL
+);
+
+-- API keys: many per identity, each a random secret stored only as a hash. The
+-- plaintext is shown once at issue. revoked_at / expires_at gate authentication.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id          TEXT PRIMARY KEY,
+  identity    TEXT NOT NULL REFERENCES identities(id),
+  hash        TEXT NOT NULL,
+  label       TEXT,
+  prefix      TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT,
+  revoked_at  TEXT
+);
+
+-- Append-only audit log for identity/owner/key management. The request feed
+-- lives in the events table; management actions have no request id of their own.
+CREATE TABLE IF NOT EXISTS admin_events (
+  id          TEXT PRIMARY KEY,
+  type        TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  target      TEXT,
+  summary     TEXT NOT NULL DEFAULT '',
+  data        TEXT NOT NULL DEFAULT '{}',
   created_at  TEXT NOT NULL
 );
 
@@ -118,6 +147,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 
 CREATE INDEX IF NOT EXISTS idx_events_request ON events(request_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_identity ON api_keys(identity);
 `;
 
 // Deterministic, readable tokens so the prototype is easy to drive with curl.
@@ -126,7 +157,16 @@ export function tokenFor(identity: string): string {
   return `sk_${identity.replace(/\//g, "_")}`;
 }
 
-// The four identities the prototype ships with.
+// Keys are stored only as a hash; authentication hashes the presented secret and
+// looks it up. Secrets are high-entropy, so an unsalted SHA-256 is sufficient
+// (same approach as GitHub-style personal access tokens).
+export function hashSecret(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+// The identities the prototype ships with. `root` is the instance admin (it can
+// mint top-level principals and manage any identity); `russell` and `maya` are
+// self-owned principals, each owning their own workers.
 const SEED_IDENTITIES: Array<{
   id: string;
   kind: string;
@@ -134,13 +174,31 @@ const SEED_IDENTITIES: Array<{
   display_name: string;
   description: string;
   gate: string | null;
+  is_admin?: boolean;
 }> = [
+  {
+    id: "root",
+    kind: "human",
+    owner: "root",
+    display_name: "Root",
+    description: "Instance admin. Bootstraps top-level principals.",
+    gate: null,
+    is_admin: true,
+  },
   {
     id: "russell",
     kind: "human",
     owner: "russell",
     display_name: "Russell",
     description: "Human owner. Sets policy and handles exceptions.",
+    gate: null,
+  },
+  {
+    id: "maya",
+    kind: "human",
+    owner: "maya",
+    display_name: "Maya",
+    description: "Human owner of the marketing worker.",
     gate: null,
   },
   {
@@ -190,6 +248,8 @@ function migrate(db: DB): void {
   add("gate_decisions", "auto", "INTEGER NOT NULL DEFAULT 0");
   add("gate_decisions", "rule", "TEXT");
   add("session_actions", "gate_status", "TEXT");
+  add("identities", "status", "TEXT NOT NULL DEFAULT 'active'");
+  add("identities", "is_admin", "INTEGER NOT NULL DEFAULT 0");
 
   // Earlier builds gave idempotency_keys a single-column PK (key), which let the
   // same key from different identities collide. Recreate it with the composite
@@ -212,17 +272,23 @@ function migrate(db: DB): void {
 
 export function seedIdentities(db: DB): void {
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO identities (id, kind, owner, display_name, description, gate, created_at)
-     VALUES (@id, @kind, @owner, @display_name, @description, @gate, @created_at)`,
+    `INSERT OR IGNORE INTO identities (id, kind, owner, display_name, description, gate, is_admin, created_at)
+     VALUES (@id, @kind, @owner, @display_name, @description, @gate, @is_admin, @created_at)`,
   );
-  const insertToken = db.prepare(
-    `INSERT OR IGNORE INTO tokens (token, identity, created_at) VALUES (?, ?, ?)`,
+  const hasKey = db.prepare(`SELECT 1 FROM api_keys WHERE identity = ? LIMIT 1`);
+  const insertKey = db.prepare(
+    `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
   );
   const ts = now();
   const tx = db.transaction(() => {
     for (const ident of SEED_IDENTITIES) {
-      insert.run({ ...ident, created_at: ts });
-      insertToken.run(tokenFor(ident.id), ident.id, ts);
+      insert.run({ ...ident, is_admin: ident.is_admin ? 1 : 0, created_at: ts });
+      // Seed one deterministic key per identity (sk_<id>) so the demo is
+      // curl-able; stored hashed like any other key. Only if none exists yet.
+      if (!hasKey.get(ident.id)) {
+        const secret = tokenFor(ident.id);
+        insertKey.run(newKeyId(), ident.id, hashSecret(secret), "seed", secret.slice(0, 12), ts);
+      }
     }
   });
   tx();

@@ -11,21 +11,30 @@ export class AuthzError extends Error {}
 // startup; there is no create-identity endpoint), so we load them once per DB
 // connection and cache the gate/owner lookup. This removes the N+1 queries that
 // gateOf/ownerOf would otherwise cause on every feed poll and inbox read.
-const identityCache = new WeakMap<object, Map<string, { gate: string | null; owner: string }>>();
+type IdentityRow = { gate: string | null; owner: string; is_admin: boolean };
+const identityCache = new WeakMap<object, Map<string, IdentityRow>>();
 
-function identities(db: DB): Map<string, { gate: string | null; owner: string }> {
+function identities(db: DB): Map<string, IdentityRow> {
   let m = identityCache.get(db);
   if (!m) {
     m = new Map();
-    const rows = db.prepare(`SELECT id, gate, owner FROM identities`).all() as Array<{
+    const rows = db.prepare(`SELECT id, gate, owner, is_admin FROM identities`).all() as Array<{
       id: string;
       gate: string | null;
       owner: string;
+      is_admin: number;
     }>;
-    for (const r of rows) m.set(r.id, { gate: r.gate, owner: r.owner });
+    for (const r of rows) m.set(r.id, { gate: r.gate, owner: r.owner, is_admin: Boolean(r.is_admin) });
     identityCache.set(db, m);
   }
   return m;
+}
+
+// Identities are no longer static (they can be created/disabled at runtime), so
+// any write to the identity graph must drop this cache, or role derivation and
+// gate/owner lookups would serve stale data.
+export function invalidateIdentities(db: DB): void {
+  identityCache.delete(db);
 }
 
 // The gate identity that screens a request: the recipient's configured gate,
@@ -49,6 +58,36 @@ export function rolesOf(db: DB, caller: string, req: SignpostRequest): Role[] {
   if (caller === gateOf(db, req)) roles.push("gate");
   if (caller === ownerOf(db, req)) roles.push("owner");
   return roles;
+}
+
+// --- management authorization (the identity/owner/key graph) -----------------
+
+export function isAdmin(db: DB, caller: string): boolean {
+  return Boolean(identities(db).get(caller)?.is_admin);
+}
+
+// True if `caller` sits above `target` in the ownership tree: it owns target
+// directly, or owns one of target's (transitive) owners. A self-owned identity
+// (owner === id) is a root and stops the walk. Admins control everything.
+export function controls(db: DB, caller: string, target: string): boolean {
+  if (isAdmin(db, caller)) return true;
+  const idents = identities(db);
+  let cur = target;
+  // Bound the walk so a malformed cycle can never spin forever.
+  for (let i = 0; i < 64; i++) {
+    const row = idents.get(cur);
+    if (!row) return false;
+    if (row.owner === caller) return true;
+    if (row.owner === cur) return false; // reached a root
+    cur = row.owner;
+  }
+  return false;
+}
+
+// Who may manage an identity (update it, disable it, mint/revoke its keys):
+// an admin, or an owner strictly above it in the tree.
+export function canManage(db: DB, caller: string, target: string): boolean {
+  return isAdmin(db, caller) || controls(db, caller, target);
 }
 
 // Which roles may perform each action in the loop.
