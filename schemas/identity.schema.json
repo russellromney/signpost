@@ -37,6 +37,13 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$"
     },
+    "status": {
+      "type": "string",
+      "enum": ["active", "disabled"]
+    },
+    "is_admin": {
+      "type": "boolean"
+    },
     "created_at": {
       "type": "string",
       "format": "date-time"

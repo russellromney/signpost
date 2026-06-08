@@ -181,7 +181,7 @@ The internal states can stay small:
 ```text
 requested
 screening
-accepted | denied | needs_info | needs_owner
+accepted | denied | needs_info | needs_owner | countered
 active
 blocked | needs_owner
 ready_for_release
@@ -260,23 +260,322 @@ POST /sessions/:id/actions
 POST /requests/:id/release
 ```
 
+## Running the Local Prototype
+
+The repository includes a working local implementation: a local-only Next.js app
+backed by SQLite that exercises the whole loop:
+
+```text
+request -> gate -> session -> release -> receipt
+```
+
+It is local-only by design (no outbound HTTP, so no webhooks/Slack/email), and
+there is one request type. But it is **not** a toy: it has an authenticated `/v1`
+API and MCP server for agents, a self-deciding gate policy engine, and
+first-class identity/owner/key management — all over one shared, authorized core.
+The web UI is just the owner's exception console on top of it.
+
+### Stack
+
+- Next.js (App Router) + TypeScript
+- SQLite via better-sqlite3
+- Server Actions for the buttons, plus a small JSON API
+
+### Setup
+
+```bash
+npm install
+npm run seed   # creates ./data/signpost.db and seeds the four identities
+```
+
+Seeded identities: `russell`, `russell/gate`, `russell/coding`, `maya/marketing`.
+
+### Dev
+
+```bash
+npm run dev    # http://localhost:3000
+```
+
+### Build and run
+
+```bash
+npm run build
+npm start
+```
+
+### Test and lint
+
+```bash
+npm test       # end-to-end test of the loop against a temp SQLite db
+npm run lint
+```
+
+The database file lives at `./data/signpost.db` by default. Override the location
+with the `SIGNPOST_DB` environment variable (tests use a throwaway temp file).
+
+### Walkthrough
+
+1. Open the inbox. The five views are **Needs Gate Decision**, **Active**,
+   **Needs Human**, **Ready For Release**, and **Done**.
+2. Expand **Create request** and send one from `maya/marketing` to
+   `russell/coding`. It routes through `russell/gate` and lands in
+   **Needs Gate Decision**.
+3. Open the request. Use **Allow with limits** at the gate.
+4. **Create / start session** for `russell/coding`.
+5. **Post session update**, then **Mark ready for release**.
+6. **Release**, then **Close with receipt** (evidence is required).
+7. The request detail page shows the full, append-only event history.
+
+## The `/v1` API (for agents)
+
+The web UI is the owner's exception console. The **API is the product** — it's
+how agents actually live in Signpost. Both the UI and the API call the same
+service layer, so they can never drift.
+
+### Authentication
+
+Every call is made *as* an identity, proven by a bearer token. Keys are stored
+only as a hash (`api_keys`); authentication hashes the presented secret and looks
+it up, skipping revoked/expired keys and disabled identities. An identity can
+have many keys, issued and revoked at runtime (see *Identity & key management*).
+
+For convenience the seed ships one **deterministic** key per identity
+(`sk_<identity-with-_>`), so the demo is curl-able out of the box:
+
+```text
+root             sk_root            (instance admin)
+russell          sk_russell
+maya             sk_maya
+russell/gate     sk_russell_gate
+russell/coding   sk_russell_coding
+maya/marketing   sk_maya_marketing
+```
+
+```bash
+curl localhost:3000/v1/me -H "Authorization: Bearer sk_maya_marketing"
+```
+
+Freshly issued keys are random and high-entropy; the deterministic seeds exist
+only so the shipped identities are easy to drive locally.
+
+> These deterministic tokens — `sk_root` especially, which is the instance admin
+> — are **demo-only** and committed to the repo. A real deployment must rotate
+> them: revoke the seeds and issue fresh random keys (the API supports both).
+
+### Authorization
+
+What you may do is derived from your **role on each request**, not a separate
+permissions table:
+
+| Role     | Who            | May                                                    |
+| -------- | -------------- | ------------------------------------------------------ |
+| `sender` | request `from` | respond to `ask_sender`, accept/decline a `counter`, read status/receipt |
+| `worker` | request `to`   | start a session, post actions, ask the gate, submit receipt |
+| `gate`   | recipient gate | decide (request / execution / release checks)          |
+| `owner`  | recipient owner| gate powers + release                                  |
+
+Wrong role → `403`. Bad/absent token → `401`. Illegal state transition → `400`.
+
+### Endpoints
+
+```http
+GET  /v1/me                              # who am I
+GET  /v1/identities                      # list identities (active only; ?include_disabled=true)
+POST /v1/identities                      # create an identity (returns an initial key)
+GET  /v1/identities/:id                  # read one identity
+PATCH  /v1/identities/:id                # update fields, or {status:active|disabled} (owner/admin)
+DELETE /v1/identities/:id                # soft-disable (owner/admin)
+GET    /v1/identities/:id/keys           # list key metadata (owner/admin/self)
+POST   /v1/identities/:id/keys           # issue a key, secret shown once (owner/admin/self)
+DELETE /v1/identities/:id/keys/:keyId    # revoke a key (owner/admin/self)
+GET  /v1/admin/events                    # management audit (?identity= scoped; else admin-only)
+GET  /v1/inbox                           # my actionable work, bucketed by role
+GET  /v1/events?since=N&request=ID&wait=MS   # cursor feed; wait=ms long-polls
+
+GET  /v1/requests?role=worker&status=accepted   # find my work
+POST /v1/requests                        # create (Idempotency-Key supported)
+GET  /v1/requests/:id
+
+POST /v1/requests/:id/decisions          # gate: allow|allow_with_limits|deny|ask_sender|ask_owner|route|counter
+POST /v1/requests/:id/info               # sender answers an ask_sender
+POST /v1/requests/:id/counter            # sender accepts/declines a counter ({ accept: bool })
+POST /v1/requests/:id/session            # worker claims + starts
+POST /v1/requests/:id/session/actions    # { action: post_update | ask_gate | complete }
+POST /v1/requests/:id/checks             # gate resolves an execution check
+POST /v1/requests/:id/release            # release, or { op: "reject", reason }
+POST /v1/requests/:id/receipt            # close with a receipt
+
+GET  /v1/identities/:id/policy           # read a gate policy (identity or owner)
+PUT  /v1/identities/:id/policy           # set a gate policy (owner only)
+```
+
+The gate's three moments are all here: request-time (`/decisions`),
+execution-time (`ask_gate` → blocked → `/checks`), and release-time
+(`/release`, `/receipt`).
+
+> **Identity ids contain `/`, so URL-encode them as `%2F` in paths.** These are
+> single path segments, not nested routes: use
+> `/v1/identities/russell%2Fcoding/keys`, not `/v1/identities/russell/coding/keys`
+> (the latter 404s).
+
+Two request-time decisions re-shape the request instead of simply admitting or
+refusing it:
+
+- **`route`** re-addresses the request to a different identity (`route_to`) and
+  sends it back through *that* recipient's gate — so it's screened (and may be
+  auto-decided) under the new owner's policy. `maya/marketing → russell` routed
+  to `russell/coding` is screened by `russell/coding`'s policy.
+- **`counter`** proposes modified terms (`limits` / `reason`) the sender must
+  accept or decline (`POST /counter`). Accept proceeds as `accepted` under the
+  proposed terms; decline closes the request. The status while it waits is
+  `countered`. `route` and `counter` are human decisions — a static policy can't
+  supply a per-request target or terms, so the policy engine never makes them.
+
+### Identity & key management
+
+Identities, owners, and keys are first-class and managed over the API/MCP — the
+system is no longer a fixed set of seeded identities. The model:
+
+- **Owner is a real edge.** Every identity has an `owner` that points at another
+  identity; a self-owned identity (`owner === id`) is a *principal* (a root of its
+  own tree). `russell` owns `russell/gate` and `russell/coding`; `maya` owns
+  `maya/marketing`.
+- **Owner-tree authorization.** You may create and manage any identity you own
+  (directly or transitively): update it, disable/re-enable it, and mint/revoke its
+  keys. Creating a **new top-level principal** requires an **admin** (the seeded
+  `root` identity). So an agent can spin up its own sub-workers, but not new tenants.
+- **Keys.** Random secret, returned exactly once, stored only as a hash; many per
+  identity, each with a label and optional (validated, future) expiry, revocable at
+  any time. List/issue/revoke responses show only a `sk_…abcd` hint (last 4 chars),
+  never secret bytes. This is also where an owner's third power — *revoke access* —
+  lives. An identity may also **rotate its own keys** (list/issue/revoke itself).
+- **Soft delete, reversible.** Identities are disabled, never removed (the audit
+  graph stays intact). A disabled identity can't authenticate or be addressed, is
+  hidden from the directory, and can be re-enabled (`PATCH {status:"active"}`). You
+  can't disable *yourself* (that would be an unrecoverable lockout). Disabling an
+  owner does **not** cascade to its children — workers keep running.
+- **Audit.** Every management action is recorded in an append-only `admin_events`
+  log, readable at `GET /v1/admin/events` (scoped per identity for its owner, or
+  global for an admin).
+
+```bash
+# russell mints a sub-worker and gets its first key (secret shown once)
+curl -X POST localhost:3000/v1/identities -H "Authorization: Bearer sk_russell" \
+  -H 'content-type: application/json' \
+  -d '{"id":"russell/data","kind":"worker","owner":"russell"}'
+```
+
+### The gate runs itself (policy)
+
+The gate is the product, so it doesn't wait for a human by default. On arrival a
+request is screened against the recipient's **policy**: matching requests are
+auto-decided (e.g. marketing tracking → `allow_with_limits`) and only the
+exceptions land in a human's inbox. Auto decisions are recorded in the audit
+trail with their rule (`auto · marketing_analytics_requests`). With no policy,
+the request stays manual. Edit policy with `PUT /v1/identities/:id/policy`
+(owner only); the seeded default mirrors `examples/gate-policy.yml`.
+
+### Long-poll
+
+`GET /v1/events?wait=25000` holds the request until a new visible event arrives
+(or the timeout), so agents don't busy-poll. (Webhooks are intentionally absent —
+outbound HTTP would break the local-only constraint.)
+
+## MCP server (LLM-native agents)
+
+The same authorized layer is exposed as MCP tools, so a Claude/LLM agent can use
+Signpost as native tools (`whoami`, `inbox`, `events`, `create_request`,
+`decide` (incl. `route`/`counter`), `respond_info`, `respond_counter`,
+`start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
+`close`, `get_policy`, `set_policy`, `create_identity`, `update_identity`,
+`disable_identity`, `enable_identity`, `list_keys`, `issue_key`, `revoke_key`,
+`admin_events`, …). It authenticates via `SIGNPOST_TOKEN`
+and shares the same local database — identical rules to the REST API.
+
+```bash
+SIGNPOST_TOKEN=sk_russell_coding npm run mcp
+```
+
+Mount it in a Claude client config:
+
+```json
+{
+  "mcpServers": {
+    "signpost": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/signpost",
+      "env": { "SIGNPOST_TOKEN": "sk_russell_coding", "SIGNPOST_DB": "/path/to/signpost/data/signpost.db" }
+    }
+  }
+}
+```
+
+## Owner console
+
+`/owner` is the smaller, owner-facing inbox per the README model: **Approvals**
+(a yes/no is needed), **Escalations** (the policy sent these up), **Exceptions**
+(a worker is blocked on a risky step), and **Audit** (recent activity). With
+policy in place, this is where a human spends their time — handling exceptions,
+not routing messages.
+
+### Agent loops
+
+```
+# worker (russell/coding)
+inbox = GET /v1/inbox
+for r in inbox.ready_to_start: POST /v1/requests/{r}/session
+POST .../session/actions {action:"post_update", summary}
+POST .../session/actions {action:"ask_gate", summary}   # risky -> blocks
+POST .../session/actions {action:"complete"}
+poll GET /v1/events?since=cursor
+
+# sender (maya/marketing)
+id = POST /v1/requests {to, goal, definition_of_done}
+on needs_info: POST /v1/requests/{id}/info {answers}
+on closed:     GET /v1/requests/{id}/receipt
+
+# gate (russell/gate — policy auto-decides; humans get the exceptions)
+inbox = GET /v1/inbox  -> needs_decision / needs_exec_check / needs_release_check
+POST /v1/requests/{id}/decisions {decision, limits, reason}
+```
+
 ## Repository Layout
 
 ```text
 README.md
 ROADMAP.md
 CHANGELOG.md
-schemas/
-  identity.schema.json
-  request.schema.json
-  gate-decision.schema.json
-  session-action.schema.json
-  receipt.schema.json
-examples/
-  request.yml
-  gate-policy.yml
+schemas/                 first machine-readable object contracts
+examples/                sample request and gate policy
+app/                     Next.js pages and the /v1 API
+  page.tsx               inbox (five views + create request)
+  owner/                 owner console (approvals/escalations/exceptions/audit)
+  requests/[id]/         request detail with actions and event history
+  components/            ActionForm (inline-error client form)
+  actions.ts             server actions for the owner console
+  v1/                    the authenticated agent-facing REST API
+lib/
+  db.ts                  SQLite schema, seeds, tokens, policies, migrations
+  types.ts               runtime contracts
+  service.ts             write side: the full loop, one transaction per step
+  queries.ts             read side: detail, inbox, filtered lists, event feed
+  ops.ts                 authorized operations (shared by REST + MCP)
+  policy.ts              gate policy engine + auto-screening
+  auth.ts / authz.ts     bearer-token -> identity / role-in-request -> permissions
+  bus.ts                 in-process notifier for the event-feed long-poll
+  api.ts                 route-handler plumbing (auth + error mapping)
+mcp/                     MCP server (tools.ts + stdio server.ts)
+test/                    loop, v1 (HTTP), policy, and mcp tests
+scripts/seed.ts          create + seed the local database
 ```
 
 ## Status
 
-This repository is the starting spec for Signpost. The next step is to build the smallest API and inbox UI that can exercise the lifecycle end to end.
+A working local implementation of the whole loop with a self-deciding gate and a
+real management layer: an authenticated `/v1` REST API, an MCP server, a policy
+engine that auto-decides and escalates only exceptions, first-class
+identity/owner/key management (owner-tree authz, hashed revocable keys,
+soft-disable), long-poll on the event feed, an owner console, and inline UI
+errors. Next steps are tracked in `ROADMAP.md` (execution/release-time policy,
+a management UI, networked webhooks, pagination).
