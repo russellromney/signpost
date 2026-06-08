@@ -14,6 +14,7 @@ import {
   identityById,
   inboxFor,
   keyIdentity,
+  listAdminEvents,
   listIdentities,
   listKeys,
   listRequestsFiltered,
@@ -27,6 +28,7 @@ import {
   createRequestIdempotent,
   decide,
   disableIdentity,
+  enableIdentity,
   issueKey,
   markReadyForRelease,
   postUpdate,
@@ -46,7 +48,15 @@ import {
   type ReceiptInput,
   type UpdateIdentityInput,
 } from "./service";
-import type { ApiKey, GatePolicy, Identity, RequestStatus, Role, SignpostRequest } from "./types";
+import type {
+  AdminEvent,
+  ApiKey,
+  GatePolicy,
+  Identity,
+  RequestStatus,
+  Role,
+  SignpostRequest,
+} from "./types";
 
 // Thrown when a request does not exist OR the caller is not party to it. Both map
 // to 404 so endpoints never reveal the existence of requests you can't see.
@@ -69,8 +79,8 @@ export function opWhoami(db: DB, caller: string): Identity | null {
   return identityById(db, caller);
 }
 
-export function opIdentities(db: DB): Identity[] {
-  return listIdentities(db);
+export function opIdentities(db: DB, includeDisabled = false): Identity[] {
+  return listIdentities(db, includeDisabled);
 }
 
 export function opGetIdentity(db: DB, _caller: string, id: string): Identity {
@@ -116,14 +126,32 @@ export function opUpdateIdentity(
 
 export function opDisableIdentity(db: DB, caller: string, id: string): Identity {
   if (!identityById(db, id)) throw new NotFoundError("not found");
+  // Disabling yourself is a one-way lockout (you can't re-enable what can't
+  // authenticate); require someone else who manages you to do it.
+  if (caller === id) throw new AuthzError(`cannot disable yourself`);
   if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage ${id}`);
   disableIdentity(db, id, caller);
   return identityById(db, id)!;
 }
 
+export function opEnableIdentity(db: DB, caller: string, id: string): Identity {
+  if (!identityById(db, id)) throw new NotFoundError("not found");
+  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage ${id}`);
+  enableIdentity(db, id, caller);
+  return identityById(db, id)!;
+}
+
+// An identity may manage its own keys (rotate, list, revoke) — self-service key
+// rotation — in addition to anyone who manages it in the ownership tree.
+function canManageKeys(db: DB, caller: string, identity: string): boolean {
+  return caller === identity || canManage(db, caller, identity);
+}
+
 export function opListKeys(db: DB, caller: string, id: string): ApiKey[] {
   if (!identityById(db, id)) throw new NotFoundError("not found");
-  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not manage keys for ${id}`);
+  if (!canManageKeys(db, caller, id)) {
+    throw new AuthzError(`${caller} may not manage keys for ${id}`);
+  }
   return listKeys(db, id);
 }
 
@@ -134,18 +162,38 @@ export function opIssueKey(
   opts: { label?: string | null; expires_at?: string | null } = {},
 ): IssuedKey {
   if (!identityById(db, id)) throw new NotFoundError("not found");
-  if (!canManage(db, caller, id)) throw new AuthzError(`${caller} may not issue keys for ${id}`);
+  if (!canManageKeys(db, caller, id)) {
+    throw new AuthzError(`${caller} may not issue keys for ${id}`);
+  }
   return issueKey(db, id, { ...opts, actor: caller });
 }
 
 export function opRevokeKey(db: DB, caller: string, keyId: string): { revoked: string } {
   const identity = keyIdentity(db, keyId);
   if (!identity) throw new NotFoundError("not found");
-  if (!canManage(db, caller, identity)) {
+  if (!canManageKeys(db, caller, identity)) {
     throw new AuthzError(`${caller} may not revoke keys for ${identity}`);
   }
   revokeKey(db, keyId, caller);
   return { revoked: keyId };
+}
+
+// The management audit. With an identity, returns that identity's events (anyone
+// who manages it, or itself, may read). Without one, admin-only and global.
+export function opAdminEvents(
+  db: DB,
+  caller: string,
+  opts: { identity?: string; limit?: number } = {},
+): AdminEvent[] {
+  if (opts.identity) {
+    if (!identityById(db, opts.identity)) throw new NotFoundError("not found");
+    if (!canManageKeys(db, caller, opts.identity)) {
+      throw new AuthzError(`${caller} may not read the audit for ${opts.identity}`);
+    }
+    return listAdminEvents(db, { target: opts.identity, limit: opts.limit });
+  }
+  if (!isAdmin(db, caller)) throw new AuthzError(`admin only`);
+  return listAdminEvents(db, { limit: opts.limit });
 }
 
 export function opInbox(db: DB, caller: string) {

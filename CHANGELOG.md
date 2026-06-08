@@ -58,7 +58,23 @@
     Authentication now resolves the hash and honors revoke/expiry/disabled.
   - Fixed the authz identity cache to invalidate on identity writes; management
     actions logged to an append-only `admin_events` table.
-  - 9 new tests (54 total); build + lint green; verified over HTTP.
+  - Hardening (from an adversarial self-review):
+    - Key display hint shows only the last 4 chars (`sk_…abcd`) instead of a
+      leading slice of the secret — no secret bytes are stored or shown.
+    - `expires_at` is validated (must be a valid, future ISO date-time); a
+      malformed value is a 400 instead of a silently-immortal key.
+    - Self-service key rotation: an identity may list/issue/revoke its own keys.
+    - Soft delete is reversible (`enable_identity` / `PATCH {status:"active"}`);
+      you can't disable yourself (avoids an unrecoverable lockout).
+    - Identity creation + its initial key are now one transaction.
+    - `kind` is required when creating a top-level principal.
+    - The directory hides disabled identities by default (`?include_disabled=true`).
+    - Management audit is now readable: `GET /v1/admin/events` (+ `admin_events`
+      MCP tool), scoped per identity for owners, global for admins.
+    - Legacy plaintext `tokens` rows are migrated into hashed `api_keys` on open
+      instead of being silently dropped.
+  - 16 new tests (61 total); build + lint green; verified end to end over HTTP
+    (incl. the `%2F`-encoded id paths).
 - Made the `route` and `counter` gate decisions real (they previously parked the
   request at `needs_owner` and did nothing):
   - `route` re-addresses a request to another identity and re-screens it under

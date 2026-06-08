@@ -9,13 +9,17 @@ import { join } from "node:path";
 import { createDb, tokenFor } from "../lib/db";
 import { identityForToken, AuthError } from "../lib/auth";
 import { AuthzError, ownerOf } from "../lib/authz";
-import { createRequest, ServiceError } from "../lib/service";
+import { createRequest, disableIdentity, ServiceError } from "../lib/service";
 import { getRequest } from "../lib/queries";
 import {
+  opAdminEvents,
   opCreateIdentity,
   opDisableIdentity,
+  opEnableIdentity,
   opGetIdentity,
+  opIdentities,
   opIssueKey,
+  opListKeys,
   opRevokeKey,
   opUpdateIdentity,
 } from "../lib/ops";
@@ -145,10 +149,137 @@ test("a disabled identity cannot authenticate or be addressed", () => {
   }
 });
 
-test("an admin identity cannot be disabled", () => {
+test("an admin identity cannot be disabled (service guard)", () => {
   const { db, cleanup } = freshDb();
   try {
-    assert.throws(() => opDisableIdentity(db, "root", "root"), ServiceError);
+    assert.throws(() => disableIdentity(db, "root"), ServiceError);
+  } finally {
+    cleanup();
+  }
+});
+
+test("you cannot disable yourself (lockout guard), but can be re-enabled", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    const issued = opCreateIdentity(db, "russell", { id: "russell/temp3", owner: "russell" });
+    // self-disable is refused at the ops layer (would be an irreversible lockout)
+    assert.throws(() => opDisableIdentity(db, "russell/temp3", "russell/temp3"), AuthzError);
+
+    // the owner can disable, then re-enable, and the key works again
+    opDisableIdentity(db, "russell", "russell/temp3");
+    assert.throws(() => identityForToken(db, issued.secret), AuthError);
+    opEnableIdentity(db, "russell", "russell/temp3");
+    assert.equal(identityForToken(db, issued.secret), "russell/temp3");
+  } finally {
+    cleanup();
+  }
+});
+
+// --- self-service keys -------------------------------------------------------
+
+test("an identity can rotate its own keys, but not disable itself", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    // russell/coding mints and lists its own key (self-service rotation)
+    const k = opIssueKey(db, "russell/coding", "russell/coding", { label: "rotated" });
+    assert.equal(identityForToken(db, k.secret), "russell/coding");
+    const ids = opListKeys(db, "russell/coding", "russell/coding").map((x) => x.id);
+    assert.ok(ids.includes(k.id));
+    // and revoke its own key
+    opRevokeKey(db, "russell/coding", k.id);
+    assert.throws(() => identityForToken(db, k.secret), AuthError);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- key hygiene -------------------------------------------------------------
+
+test("the key prefix never exposes secret bytes, and bad expiry is rejected", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    const k = opIssueKey(db, "russell", "russell", {});
+    // the hint shows only the last 4 chars; it is not a leading substring
+    assert.equal(k.prefix, `sk_…${k.secret.slice(-4)}`);
+    assert.ok(!k.secret.startsWith(k.prefix));
+
+    // malformed expiry is a 400, not a silently-immortal key
+    assert.throws(() => opIssueKey(db, "russell", "russell", { expires_at: "banana" }), ServiceError);
+    assert.throws(
+      () => opIssueKey(db, "russell", "russell", { expires_at: "2000-01-01T00:00:00Z" }),
+      ServiceError,
+    );
+    // a valid future expiry is accepted and normalized to ISO
+    const fut = new Date(Date.now() + 86_400_000).toISOString();
+    const k2 = opIssueKey(db, "russell", "russell", { expires_at: fut });
+    assert.equal(k2.expires_at, fut);
+    assert.equal(identityForToken(db, k2.secret), "russell");
+  } finally {
+    cleanup();
+  }
+});
+
+// --- directory + audit -------------------------------------------------------
+
+test("disabled identities are hidden from the directory by default", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    opCreateIdentity(db, "russell", { id: "russell/hidden", owner: "russell" });
+    opDisableIdentity(db, "russell", "russell/hidden");
+    assert.ok(!opIdentities(db).some((i) => i.id === "russell/hidden"));
+    assert.ok(opIdentities(db, true).some((i) => i.id === "russell/hidden"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("management actions are audited and readable by owner/admin", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    opCreateIdentity(db, "russell", { id: "russell/audited", owner: "russell" });
+    const events = opAdminEvents(db, "russell", { identity: "russell/audited" });
+    const types = events.map((e) => e.type);
+    assert.ok(types.includes("identity_created"));
+    assert.ok(types.includes("key_issued"));
+    // a non-manager cannot read another identity's audit
+    assert.throws(() => opAdminEvents(db, "maya", { identity: "russell/audited" }), AuthzError);
+    // global audit is admin-only
+    assert.throws(() => opAdminEvents(db, "russell", {}), AuthzError);
+    assert.ok(opAdminEvents(db, "root", {}).length > 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("legacy plaintext tokens are migrated into hashed api_keys on open", () => {
+  const dir = mkdtempSync(join(tmpdir(), "signpost-ids-"));
+  try {
+    const path = join(dir, "t.db");
+    let db = createDb(path);
+    // simulate a pre-existing database that still has a custom plaintext token
+    db.prepare(`INSERT INTO tokens (token, identity, created_at) VALUES (?, ?, ?)`).run(
+      "sk_custom_legacy",
+      "russell/coding",
+      new Date().toISOString(),
+    );
+    db.close();
+
+    // reopening runs migrate(), which carries the token across (hashed)
+    db = createDb(path);
+    assert.equal(identityForToken(db, "sk_custom_legacy"), "russell/coding");
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("disabling an owner leaves its children active (no cascade)", () => {
+  const { db, cleanup } = freshDb();
+  try {
+    // russell/coding keeps working even after its human owner is disabled.
+    opDisableIdentity(db, "root", "russell");
+    assert.equal(identityForToken(db, tokenFor("russell/coding")), "russell/coding");
+    assert.throws(() => identityForToken(db, tokenFor("russell")), AuthError);
   } finally {
     cleanup();
   }

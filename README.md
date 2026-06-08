@@ -358,6 +358,10 @@ curl localhost:3000/v1/me -H "Authorization: Bearer sk_maya_marketing"
 Freshly issued keys are random and high-entropy; the deterministic seeds exist
 only so the shipped identities are easy to drive locally.
 
+> These deterministic tokens — `sk_root` especially, which is the instance admin
+> — are **demo-only** and committed to the repo. A real deployment must rotate
+> them: revoke the seeds and issue fresh random keys (the API supports both).
+
 ### Authorization
 
 What you may do is derived from your **role on each request**, not a separate
@@ -376,14 +380,15 @@ Wrong role → `403`. Bad/absent token → `401`. Illegal state transition → `
 
 ```http
 GET  /v1/me                              # who am I
-GET  /v1/identities                      # list identities
+GET  /v1/identities                      # list identities (active only; ?include_disabled=true)
 POST /v1/identities                      # create an identity (returns an initial key)
 GET  /v1/identities/:id                  # read one identity
-PATCH  /v1/identities/:id                # update display_name / description / gate (owner/admin)
+PATCH  /v1/identities/:id                # update fields, or {status:active|disabled} (owner/admin)
 DELETE /v1/identities/:id                # soft-disable (owner/admin)
-GET    /v1/identities/:id/keys           # list key metadata (owner/admin)
-POST   /v1/identities/:id/keys           # issue a key, secret shown once (owner/admin)
-DELETE /v1/identities/:id/keys/:keyId    # revoke a key (owner/admin)
+GET    /v1/identities/:id/keys           # list key metadata (owner/admin/self)
+POST   /v1/identities/:id/keys           # issue a key, secret shown once (owner/admin/self)
+DELETE /v1/identities/:id/keys/:keyId    # revoke a key (owner/admin/self)
+GET  /v1/admin/events                    # management audit (?identity= scoped; else admin-only)
 GET  /v1/inbox                           # my actionable work, bucketed by role
 GET  /v1/events?since=N&request=ID&wait=MS   # cursor feed; wait=ms long-polls
 
@@ -408,6 +413,11 @@ The gate's three moments are all here: request-time (`/decisions`),
 execution-time (`ask_gate` → blocked → `/checks`), and release-time
 (`/release`, `/receipt`).
 
+> **Identity ids contain `/`, so URL-encode them as `%2F` in paths.** These are
+> single path segments, not nested routes: use
+> `/v1/identities/russell%2Fcoding/keys`, not `/v1/identities/russell/coding/keys`
+> (the latter 404s).
+
 Two request-time decisions re-shape the request instead of simply admitting or
 refusing it:
 
@@ -431,15 +441,22 @@ system is no longer a fixed set of seeded identities. The model:
   own tree). `russell` owns `russell/gate` and `russell/coding`; `maya` owns
   `maya/marketing`.
 - **Owner-tree authorization.** You may create and manage any identity you own
-  (directly or transitively): update it, disable it, and mint/revoke its keys.
-  Creating a **new top-level principal** requires an **admin** (the seeded `root`
-  identity). So an agent can spin up its own sub-workers, but not new tenants.
+  (directly or transitively): update it, disable/re-enable it, and mint/revoke its
+  keys. Creating a **new top-level principal** requires an **admin** (the seeded
+  `root` identity). So an agent can spin up its own sub-workers, but not new tenants.
 - **Keys.** Random secret, returned exactly once, stored only as a hash; many per
-  identity, each with a label and optional expiry, revocable at any time. This is
-  also where an owner's third power — *revoke access* — lives.
-- **Soft delete.** Identities are disabled, never removed (the audit graph stays
-  intact). A disabled identity can't authenticate or be addressed. Management
-  actions are recorded in an append-only `admin_events` log.
+  identity, each with a label and optional (validated, future) expiry, revocable at
+  any time. List/issue/revoke responses show only a `sk_…abcd` hint (last 4 chars),
+  never secret bytes. This is also where an owner's third power — *revoke access* —
+  lives. An identity may also **rotate its own keys** (list/issue/revoke itself).
+- **Soft delete, reversible.** Identities are disabled, never removed (the audit
+  graph stays intact). A disabled identity can't authenticate or be addressed, is
+  hidden from the directory, and can be re-enabled (`PATCH {status:"active"}`). You
+  can't disable *yourself* (that would be an unrecoverable lockout). Disabling an
+  owner does **not** cascade to its children — workers keep running.
+- **Audit.** Every management action is recorded in an append-only `admin_events`
+  log, readable at `GET /v1/admin/events` (scoped per identity for its owner, or
+  global for an admin).
 
 ```bash
 # russell mints a sub-worker and gets its first key (secret shown once)
@@ -471,7 +488,8 @@ Signpost as native tools (`whoami`, `inbox`, `events`, `create_request`,
 `decide` (incl. `route`/`counter`), `respond_info`, `respond_counter`,
 `start_session`, `post_update`, `ask_gate`, `resolve_check`, `release`,
 `close`, `get_policy`, `set_policy`, `create_identity`, `update_identity`,
-`disable_identity`, `list_keys`, `issue_key`, `revoke_key`, …). It authenticates via `SIGNPOST_TOKEN`
+`disable_identity`, `enable_identity`, `list_keys`, `issue_key`, `revoke_key`,
+`admin_events`, …). It authenticates via `SIGNPOST_TOKEN`
 and shares the same local database — identical rules to the REST API.
 
 ```bash

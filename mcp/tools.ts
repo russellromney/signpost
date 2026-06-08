@@ -85,9 +85,15 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "disable_identity",
-    description: "Soft-disable an identity so it can no longer authenticate or be addressed (owner or admin).",
+    description: "Soft-disable an identity so it can no longer authenticate or be addressed (owner or admin; not yourself).",
     inputSchema: { id: z.string() },
     run: ({ db, caller }, a) => ops.opDisableIdentity(db, caller, s(a.id)),
+  },
+  {
+    name: "enable_identity",
+    description: "Re-enable a previously disabled identity (owner or admin).",
+    inputSchema: { id: z.string() },
+    run: ({ db, caller }, a) => ops.opEnableIdentity(db, caller, s(a.id)),
   },
   {
     name: "list_keys",
@@ -107,9 +113,20 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "revoke_key",
-    description: "Revoke an API key by its id (owner of the key's identity, or admin).",
+    description: "Revoke an API key by its id (the key's own identity, its owner, or admin).",
     inputSchema: { key_id: z.string() },
     run: ({ db, caller }, a) => ops.opRevokeKey(db, caller, s(a.key_id)),
+  },
+  {
+    name: "admin_events",
+    description:
+      "Read the identity/owner/key management audit. With `identity`, returns that identity's events (its owner/admin or itself); without it, admin-only and global.",
+    inputSchema: { identity: z.string().optional(), limit: z.number().optional() },
+    run: ({ db, caller }, a) =>
+      ops.opAdminEvents(db, caller, {
+        identity: a.identity ? s(a.identity) : undefined,
+        limit: typeof a.limit === "number" ? a.limit : undefined,
+      }),
   },
   {
     name: "inbox",

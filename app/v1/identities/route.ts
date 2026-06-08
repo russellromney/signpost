@@ -3,7 +3,10 @@ import { opCreateIdentity, opIdentities } from "@/lib/ops";
 import type { CreateIdentityInput } from "@/lib/service";
 
 export async function GET(req: Request) {
-  return authed(req, ({ db }) => json({ identities: opIdentities(db) }));
+  return authed(req, ({ db }) => {
+    const includeDisabled = new URL(req.url).searchParams.get("include_disabled") === "true";
+    return json({ identities: opIdentities(db, includeDisabled) });
+  });
 }
 
 // Create an identity. You may create one owned by you (or an identity you own);

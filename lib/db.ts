@@ -102,8 +102,8 @@ CREATE TABLE IF NOT EXISTS events (
   created_at  TEXT NOT NULL
 );
 
--- One bearer token per identity. Authenticates API callers as an identity.
--- (Legacy: superseded by api_keys, kept so old databases keep their rows.)
+-- Legacy plaintext tokens. Superseded by api_keys; new databases never write
+-- here, and migrate() copies any pre-existing rows into api_keys (hashed).
 CREATE TABLE IF NOT EXISTS tokens (
   token       TEXT PRIMARY KEY,
   identity    TEXT NOT NULL REFERENCES identities(id),
@@ -162,6 +162,13 @@ export function tokenFor(identity: string): string {
 // (same approach as GitHub-style personal access tokens).
 export function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
+}
+
+// A non-secret display hint for a key, e.g. "sk_…aB3d". Shows only the last 4
+// characters (the conventional minimal-leak hint, like Stripe/AWS); the secret
+// itself is never stored or shown again after issue.
+export function keyHint(secret: string): string {
+  return `sk_…${secret.slice(-4)}`;
 }
 
 // The identities the prototype ships with. `root` is the instance admin (it can
@@ -268,6 +275,33 @@ function migrate(db: DB): void {
          created_at TEXT NOT NULL, PRIMARY KEY (identity, key))`,
     );
   }
+
+  migrateTokensToKeys(db);
+}
+
+// Auth moved from the plaintext `tokens` table to hashed `api_keys`. Carry any
+// rows from a pre-existing database across (hashing them) so old tokens keep
+// working, instead of silently dropping them.
+function migrateTokensToKeys(db: DB): void {
+  const hasTokens = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='tokens'`)
+    .get();
+  if (!hasTokens) return;
+  const rows = db.prepare(`SELECT token, identity, created_at FROM tokens`).all() as Array<{
+    token: string;
+    identity: string;
+    created_at: string;
+  }>;
+  const hasHash = db.prepare(`SELECT 1 FROM api_keys WHERE hash = ? LIMIT 1`);
+  const insertKey = db.prepare(
+    `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const identExists = db.prepare(`SELECT 1 FROM identities WHERE id = ? LIMIT 1`);
+  for (const r of rows) {
+    const hash = hashSecret(r.token);
+    if (hasHash.get(hash) || !identExists.get(r.identity)) continue;
+    insertKey.run(newKeyId(), r.identity, hash, "migrated", keyHint(r.token), r.created_at);
+  }
 }
 
 export function seedIdentities(db: DB): void {
@@ -275,7 +309,7 @@ export function seedIdentities(db: DB): void {
     `INSERT OR IGNORE INTO identities (id, kind, owner, display_name, description, gate, is_admin, created_at)
      VALUES (@id, @kind, @owner, @display_name, @description, @gate, @is_admin, @created_at)`,
   );
-  const hasKey = db.prepare(`SELECT 1 FROM api_keys WHERE identity = ? LIMIT 1`);
+  const hasHash = db.prepare(`SELECT 1 FROM api_keys WHERE hash = ? LIMIT 1`);
   const insertKey = db.prepare(
     `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
   );
@@ -284,10 +318,11 @@ export function seedIdentities(db: DB): void {
     for (const ident of SEED_IDENTITIES) {
       insert.run({ ...ident, is_admin: ident.is_admin ? 1 : 0, created_at: ts });
       // Seed one deterministic key per identity (sk_<id>) so the demo is
-      // curl-able; stored hashed like any other key. Only if none exists yet.
-      if (!hasKey.get(ident.id)) {
-        const secret = tokenFor(ident.id);
-        insertKey.run(newKeyId(), ident.id, hashSecret(secret), "seed", secret.slice(0, 12), ts);
+      // curl-able; stored hashed like any other key. Guard on the specific hash
+      // so the seed key is always present even if other keys exist.
+      const secret = tokenFor(ident.id);
+      if (!hasHash.get(hashSecret(secret))) {
+        insertKey.run(newKeyId(), ident.id, hashSecret(secret), "seed", keyHint(secret), ts);
       }
     }
   });

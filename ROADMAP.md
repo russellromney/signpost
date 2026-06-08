@@ -173,10 +173,19 @@ first-class over the API and MCP, built on the shared `lib/ops` authorization.
   /v1/identities/:id/keys[/:keyId]`. Auth now resolves the hash and honors
   revoke/expiry/disabled. Deterministic `sk_*` seeds preserved for the demo.
 - **Authz cache fixed**: the per-connection identity cache is invalidated on
-  every identity write (it previously assumed identities never change).
-- **Audit**: management actions logged to an append-only `admin_events` table.
-- 9 new tests (owner-tree authz, key lifecycle, soft-disable, cache
-  invalidation); 54 total, build + lint green, verified over HTTP.
+  every identity write (it previously assumed identities never change). Note: the
+  cache is per-connection, so invalidation only propagates within one process —
+  fine for the single-process prototype, revisit alongside `BEGIN IMMEDIATE`.
+- **Audit**: management actions logged to an append-only `admin_events` table and
+  readable at `GET /v1/admin/events` (scoped per identity, or global for admins).
+- **Hardened** (adversarial self-review): non-leaking key hints (last-4 only),
+  validated/future `expires_at`, self-service key rotation, reversible soft-delete
+  (`enable`) with self-disable lockout guard, atomic create+initial-key, required
+  `kind` for principals, directory hides disabled identities, and legacy plaintext
+  `tokens` migrated into hashed `api_keys` instead of dropped.
+- 16 new tests (owner-tree authz, key lifecycle + hygiene, soft-disable/enable,
+  self-service, audit, cache invalidation, token migration); 61 total, build +
+  lint green, verified over HTTP including `%2F`-encoded id paths.
 
 ## Next Steps
 
@@ -184,9 +193,10 @@ first-class over the API and MCP, built on the shared `lib/ops` authorization.
    policy, and issue/revoke keys (the API is done; the console can't do these yet).
 2. Execution-time and release-time policy (auto-resolve some `ask_gate` / release
    checks via trigger rules) — request-time is done.
-3. Pagination/cursors on `/v1/requests` and on the `admin_events` audit;
-   surface the management audit via an endpoint.
-4. Networked mode: webhooks on the event feed and `BEGIN IMMEDIATE` for
+3. Pagination/cursors on `/v1/requests` and `/v1/admin/events`.
+4. Tenant-scoped identity directory (today any caller can list every identity);
+   matters once the owner-edge is used for real multi-tenancy.
+5. Networked mode: webhooks on the event feed and `BEGIN IMMEDIATE` for
    multi-process write safety (single-process is race-free today).
-5. Only after receipts accumulate: reputation and policy learning (still out of
+6. Only after receipts accumulate: reputation and policy learning (still out of
    scope for now).

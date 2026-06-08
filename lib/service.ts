@@ -7,7 +7,7 @@
 // time-of-use race between a status read and the state change it gates.
 import { gateOf, invalidateIdentities, ownerOf } from "./authz";
 import { emitEvent } from "./bus";
-import { hashSecret, type DB } from "./db";
+import { hashSecret, keyHint, type DB } from "./db";
 import {
   newActionId,
   newAdminEventId,
@@ -122,38 +122,60 @@ export interface IssuedKey {
   id: string;
   identity: string;
   secret: string; // shown once, never stored
-  prefix: string;
+  prefix: string; // non-secret display hint, e.g. "sk_…aB3d"
   label: string | null;
   created_at: string;
   expires_at: string | null;
 }
 
-// Mint a key for an identity. The plaintext secret is returned exactly once;
-// only its hash is persisted.
-export function issueKey(
+// Validate/normalize an optional expiry. A missing value means "never expires";
+// a malformed or past value is a 400, not a silently-immortal key.
+function normalizeExpiry(expires_at: string | null | undefined): string | null {
+  if (expires_at === null || expires_at === undefined || expires_at === "") return null;
+  const t = Date.parse(expires_at);
+  if (Number.isNaN(t)) {
+    throw new ServiceError(`invalid expires_at "${expires_at}" (use an ISO 8601 date-time)`);
+  }
+  if (t <= Date.now()) throw new ServiceError(`expires_at must be in the future`);
+  return new Date(t).toISOString();
+}
+
+// Insert a key row and log it. No transaction of its own, so callers can run it
+// atomically alongside other writes (e.g. createIdentity). Returns the secret,
+// which is shown to the caller exactly once and never persisted.
+function mintKeyRow(
   db: DB,
   identity: string,
-  opts: { label?: string | null; expires_at?: string | null; actor?: string } = {},
+  opts: { label?: string | null; expires_at?: string | null; actor?: string },
 ): IssuedKey {
   const secret = newSecret();
   const id = newKeyId();
   const ts = now();
   const label = opts.label?.trim() || null;
-  const expires_at = opts.expires_at ?? null;
-  const tx = db.transaction(() => {
+  const expires_at = normalizeExpiry(opts.expires_at);
+  const prefix = keyHint(secret);
+  db.prepare(
+    `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, identity, hashSecret(secret), label, prefix, ts, expires_at);
+  logAdmin(db, "key_issued", opts.actor ?? identity, identity, `Issued key ${id}.`, { key: id });
+  return { id, identity, secret, prefix, label, created_at: ts, expires_at };
+}
+
+// Mint a key for an existing, active identity.
+export function issueKey(
+  db: DB,
+  identity: string,
+  opts: { label?: string | null; expires_at?: string | null; actor?: string } = {},
+): IssuedKey {
+  return db.transaction(() => {
     const ident = db.prepare(`SELECT status FROM identities WHERE id = ?`).get(identity) as
       | { status: string }
       | undefined;
     if (!ident) throw new ServiceError(`Unknown identity ${identity}`);
     if (ident.status === "disabled") throw new ServiceError(`Identity ${identity} is disabled`);
-    db.prepare(
-      `INSERT INTO api_keys (id, identity, hash, label, prefix, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, identity, hashSecret(secret), label, secret.slice(0, 12), ts, expires_at);
-    logAdmin(db, "key_issued", opts.actor ?? identity, identity, `Issued key ${id}.`, { key: id });
-  });
-  tx();
-  return { id, identity, secret, prefix: secret.slice(0, 12), label, created_at: ts, expires_at };
+    return mintKeyRow(db, identity, opts);
+  })();
 }
 
 export function createIdentity(db: DB, input: CreateIdentityInput, actor?: string): IssuedKey {
@@ -161,19 +183,26 @@ export function createIdentity(db: DB, input: CreateIdentityInput, actor?: strin
   if (!IDENTITY_ID.test(id)) {
     throw new ServiceError(`invalid identity id "${id}" (use lowercase letters, digits, - _ and /)`);
   }
+  const owner = input.owner?.trim() || id; // default: self-owned principal
+  const selfOwned = owner === id;
+  // A top-level principal can be many things (human, org, service); don't guess.
+  if (selfOwned && !input.kind) {
+    throw new ServiceError(`kind is required for a top-level principal (${id})`);
+  }
   const kind = input.kind ?? "worker";
   if (!IDENTITY_KINDS.includes(kind)) throw new ServiceError(`invalid identity kind "${kind}"`);
-  const owner = input.owner?.trim() || id; // default: self-owned principal
   const gate = typeof input.gate === "string" && input.gate.trim() ? input.gate.trim() : null;
 
   const ts = now();
-  const tx = db.transaction(() => {
+  // Identity insert and the initial key are one transaction: never an identity
+  // with no way to authenticate.
+  return db.transaction(() => {
     if (db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(id)) {
       throw new ServiceError(`identity ${id} already exists`);
     }
     // The owner must already exist (unless this is a self-owned principal), so
     // the ownership tree is always well-formed.
-    if (owner !== id && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(owner)) {
+    if (!selfOwned && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(owner)) {
       throw new ServiceError(`unknown owner ${owner}`);
     }
     if (gate && !db.prepare(`SELECT 1 FROM identities WHERE id = ?`).get(gate)) {
@@ -189,10 +218,9 @@ export function createIdentity(db: DB, input: CreateIdentityInput, actor?: strin
       owner,
       gate,
     });
-  });
-  tx();
-  // Hand back an initial key so the new identity can immediately authenticate.
-  return issueKey(db, id, { label: "initial", actor });
+    // Hand back an initial key so the new identity can immediately authenticate.
+    return mintKeyRow(db, id, { label: "initial", actor });
+  })();
 }
 
 export interface UpdateIdentityInput {
@@ -251,6 +279,21 @@ export function disableIdentity(db: DB, id: string, actor?: string): void {
     db.prepare(`UPDATE identities SET status = 'disabled' WHERE id = ?`).run(id);
     invalidateIdentities(db);
     logAdmin(db, "identity_disabled", actor ?? id, id, `Disabled identity ${id}.`);
+  });
+  tx();
+}
+
+// Reverse a soft delete. Soft-disable would be a trap without it.
+export function enableIdentity(db: DB, id: string, actor?: string): void {
+  const tx = db.transaction(() => {
+    const row = db.prepare(`SELECT status FROM identities WHERE id = ?`).get(id) as
+      | { status: string }
+      | undefined;
+    if (!row) throw new ServiceError(`Unknown identity ${id}`);
+    if (row.status === "active") return; // idempotent
+    db.prepare(`UPDATE identities SET status = 'active' WHERE id = ?`).run(id);
+    invalidateIdentities(db);
+    logAdmin(db, "identity_enabled", actor ?? id, id, `Re-enabled identity ${id}.`);
   });
   tx();
 }

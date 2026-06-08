@@ -2,6 +2,7 @@
 import type { DB } from "./db";
 import { rolesOf } from "./authz";
 import type {
+  AdminEvent,
   ApiKey,
   EventRecord,
   GateDecision,
@@ -142,8 +143,37 @@ function mapEvent(r: Row): EventRecord {
   };
 }
 
-export function listIdentities(db: DB): Identity[] {
-  return (db.prepare(`SELECT * FROM identities ORDER BY id`).all() as Row[]).map(mapIdentity);
+// The identity directory. Disabled identities are hidden by default (they can't
+// be addressed); pass includeDisabled to see soft-deleted ones too.
+export function listIdentities(db: DB, includeDisabled = false): Identity[] {
+  const sql = includeDisabled
+    ? `SELECT * FROM identities ORDER BY id`
+    : `SELECT * FROM identities WHERE status = 'active' ORDER BY id`;
+  return (db.prepare(sql).all() as Row[]).map(mapIdentity);
+}
+
+// The management audit, newest first. Optionally scoped to one target identity.
+export function listAdminEvents(
+  db: DB,
+  opts: { target?: string; limit?: number } = {},
+): AdminEvent[] {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const rows = (
+    opts.target
+      ? db
+          .prepare(`SELECT * FROM admin_events WHERE target = ? ORDER BY rowid DESC LIMIT ?`)
+          .all(opts.target, limit)
+      : db.prepare(`SELECT * FROM admin_events ORDER BY rowid DESC LIMIT ?`).all(limit)
+  ) as Row[];
+  return rows.map((r) => ({
+    id: r.id as string,
+    type: r.type as string,
+    actor: r.actor as string,
+    target: (r.target as string) ?? null,
+    summary: (r.summary as string) ?? "",
+    data: JSON.parse((r.data as string) ?? "{}") as Record<string, unknown>,
+    created_at: r.created_at as string,
+  }));
 }
 
 export function getRequest(db: DB, id: string): SignpostRequest | null {

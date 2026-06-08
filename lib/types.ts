@@ -174,6 +174,18 @@ export interface EventRecord {
   seq?: number;
 }
 
+// Append-only audit of identity / owner / key management actions (created,
+// updated, disabled, enabled, key_issued, key_revoked).
+export interface AdminEvent {
+  id: string;
+  type: string;
+  actor: string;
+  target: string | null;
+  summary: string;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
 // A caller's relationship to a particular request. Authorization derives from it.
 export type Role = "sender" | "worker" | "gate" | "owner";
 
